@@ -1,7 +1,7 @@
 import { type Edge, type MetricDef } from './metric-engine';
 
 const CARD_W = 272; // 17rem
-const CARD_H = 100;
+const CARD_H = 112;
 
 interface CanvasEdgesProps {
   edges: Edge[];
@@ -26,8 +26,9 @@ export function CanvasEdges({ edges, metrics, highlightedEdges, impactActive }: 
         const toMetric = metrics[edge.to];
         if (!fromMetric?.position || !toMetric?.position) return null;
 
-        const key = `${edge.from}-${edge.to}`;
-        const highlighted = highlightedEdges.has(key);
+        const relationKey = `${edge.from}-${edge.to}`;
+        const key = `${edge.type}-${relationKey}`;
+        const highlighted = highlightedEdges.has(relationKey);
         const x1 = fromMetric.position.x + CARD_W;
         const y1 = fromMetric.position.y + CARD_H / 2;
         const x2 = toMetric.position.x;

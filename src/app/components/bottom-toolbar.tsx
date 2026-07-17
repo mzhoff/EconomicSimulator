@@ -1,4 +1,18 @@
-import { Undo2, Redo2, LayoutGrid, Maximize2, Minimize2, ZoomIn, ZoomOut, Focus, MousePointer2, Hand, Spline, Eye, Plus } from 'lucide-react';
+import {
+  Eye,
+  Focus,
+  Hand,
+  LayoutGrid,
+  Maximize2,
+  Minimize2,
+  MousePointer2,
+  Plus,
+  Redo2,
+  Spline,
+  Undo2,
+  ZoomIn,
+  ZoomOut,
+} from 'lucide-react';
 
 interface BottomToolbarProps {
   allCollapsed: boolean;
@@ -10,54 +24,78 @@ interface BottomToolbarProps {
   onFitToView: () => void;
   onAutoLayout: () => void;
   onAddMetric: () => void;
+  onUndo: () => void;
+  onRedo: () => void;
+  canUndo: boolean;
+  canRedo: boolean;
   scale: number;
 }
 
-export function BottomToolbar({ allCollapsed, onToggleAll, impactActive, onToggleImpact, onZoomIn, onZoomOut, onFitToView, onAutoLayout, onAddMetric, scale }: BottomToolbarProps) {
+export function BottomToolbar({
+  allCollapsed,
+  onToggleAll,
+  impactActive,
+  onToggleImpact,
+  onZoomIn,
+  onZoomOut,
+  onFitToView,
+  onAutoLayout,
+  onAddMetric,
+  onUndo,
+  onRedo,
+  canUndo,
+  canRedo,
+  scale,
+}: BottomToolbarProps) {
   return (
     <div
+      data-canvas-interactive="true"
       className="absolute bottom-[1rem] left-1/2 -translate-x-1/2 z-30 flex items-center gap-[0.25rem] rounded-[var(--radius-xl)] border border-border bg-card px-[0.375rem] py-[0.375rem] shadow-lg"
-      onPointerDown={(e) => e.stopPropagation()}
+      onPointerDown={(event) => event.stopPropagation()}
     >
-      {/* Add metric */}
-      <ToolBtn icon={<Plus />} tooltip="Add Metric" onClick={onAddMetric} highlight />
-
+      <ToolBtn icon={<Plus />} tooltip="Добавить метрику" onClick={onAddMetric} highlight />
       <Divider />
-
-      <ToolBtn icon={<MousePointer2 />} tooltip="Select" active />
-      <ToolBtn icon={<Hand />} tooltip="Pan (middle mouse)" />
-      <ToolBtn icon={<Spline />} tooltip="Connect" />
-
+      <ToolBtn icon={<MousePointer2 />} tooltip="Выделение: клик, Shift и рамка" active />
+      <ToolBtn icon={<Hand />} tooltip="Панорамирование: средняя кнопка или колесо" />
+      <ToolBtn icon={<Spline />} tooltip="Расчётные связи выводятся из AST и не редактируются отдельно" disabled />
       <Divider />
-
-      <ToolBtn icon={<Eye />} tooltip="Impact +10%" active={impactActive} onClick={onToggleImpact} />
-
+      <ToolBtn icon={<Eye />} tooltip="What-if impact до North Star" active={impactActive} onClick={onToggleImpact} />
       <Divider />
-
-      <ToolBtn icon={<LayoutGrid />} tooltip="Auto-layout" onClick={onAutoLayout} />
-      <ToolBtn icon={<Focus />} tooltip="Fit to view" onClick={onFitToView} />
-
+      <ToolBtn icon={<Undo2 />} tooltip="Отменить (⌘Z)" onClick={onUndo} disabled={!canUndo} />
+      <ToolBtn icon={<Redo2 />} tooltip="Повторить (⇧⌘Z)" onClick={onRedo} disabled={!canRedo} />
       <Divider />
-
-      <ToolBtn icon={<ZoomOut />} tooltip="Zoom out" onClick={onZoomOut} />
+      <ToolBtn icon={<LayoutGrid />} tooltip="Автоматически разложить DAG" onClick={onAutoLayout} />
+      <ToolBtn icon={<Focus />} tooltip="Показать всю модель" onClick={onFitToView} />
+      <Divider />
+      <ToolBtn icon={<ZoomOut />} tooltip="Уменьшить масштаб" onClick={onZoomOut} />
       <span className="text-[0.625rem] text-muted-foreground min-w-[2.5rem] text-center select-none" style={{ fontWeight: 500 }}>
         {Math.round(scale * 100)}%
       </span>
-      <ToolBtn icon={<ZoomIn />} tooltip="Zoom in" onClick={onZoomIn} />
-
+      <ToolBtn icon={<ZoomIn />} tooltip="Увеличить масштаб" onClick={onZoomIn} />
       <Divider />
-
       <ToolBtn
         icon={allCollapsed ? <Minimize2 /> : <Maximize2 />}
-        tooltip={allCollapsed ? 'Show panels' : 'Hide panels'}
+        tooltip={allCollapsed ? 'Показать панели' : 'Скрыть панели'}
         onClick={onToggleAll}
       />
     </div>
   );
 }
 
-function ToolBtn({ icon, tooltip, active, disabled, onClick, highlight }: {
-  icon: React.ReactNode; tooltip: string; active?: boolean; disabled?: boolean; onClick?: () => void; highlight?: boolean;
+function ToolBtn({
+  icon,
+  tooltip,
+  active,
+  disabled,
+  onClick,
+  highlight,
+}: {
+  icon: React.ReactNode;
+  tooltip: string;
+  active?: boolean;
+  disabled?: boolean;
+  onClick?: () => void;
+  highlight?: boolean;
 }) {
   return (
     <button

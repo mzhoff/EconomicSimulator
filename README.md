@@ -21,6 +21,7 @@
 2. [Предметная модель метрик](docs/metric-model.md)
 3. [Продуктовый и технический roadmap](docs/product-roadmap.md)
 4. [Первый этап: TokBeri Foundation](docs/phase-1-tokberi-foundation.md)
+5. [Что реализовано в Phase 1](docs/phase-1-implementation.md)
 
 ## Зафиксированные решения
 
@@ -47,5 +48,7 @@ npm run dev
 Проверка production-сборки:
 
 ```bash
+npm test
+npm run typecheck
 npm run build
 ```

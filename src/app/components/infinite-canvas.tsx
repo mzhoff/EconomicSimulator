@@ -1,147 +1,187 @@
-import { useRef, useState, useCallback, useEffect, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import type { ViewportState } from './metric-engine';
 
-interface Transform {
+export interface CanvasPoint {
   x: number;
   y: number;
-  scale: number;
 }
 
 const MIN_SCALE = 0.1;
 const MAX_SCALE = 5;
 const ZOOM_FACTOR = 0.001;
 
-interface InfiniteCanvasProps {
-  children: ReactNode;
-  contentWidth: number;
-  contentHeight: number;
-  onZoomChange?: (scale: number) => void;
-  zoomIn?: () => void;
-  zoomOut?: () => void;
-  fitToView?: () => void;
-}
-
-export function useCanvasControls() {
-  const [transform, setTransform] = useState<Transform>({ x: 0, y: 0, scale: 1 });
+export function useCanvasControls(initial: ViewportState = { x: 0, y: 0, scale: 1 }) {
+  const [transform, setTransform] = useState<ViewportState>(() => initial);
 
   const zoomIn = useCallback(() => {
-    setTransform((t) => {
-      const newScale = Math.min(t.scale * 1.1, MAX_SCALE);
-      return { ...t, scale: newScale };
-    });
+    setTransform((current) => ({ ...current, scale: Math.min(current.scale * 1.1, MAX_SCALE) }));
   }, []);
 
   const zoomOut = useCallback(() => {
-    setTransform((t) => {
-      const newScale = Math.max(t.scale * 0.9, MIN_SCALE);
-      return { ...t, scale: newScale };
-    });
+    setTransform((current) => ({ ...current, scale: Math.max(current.scale * 0.9, MIN_SCALE) }));
   }, []);
 
   const fitToView = useCallback((containerW: number, containerH: number, contentW: number, contentH: number) => {
     const padTop = 80;
     const padBottom = 100;
     const padX = 60;
-    const availW = containerW - padX * 2;
-    const availH = containerH - padTop - padBottom;
-    const scaleX = availW / contentW;
-    const scaleY = availH / contentH;
-    const scale = Math.max(0.05, Math.min(Math.min(scaleX, scaleY), 1.5));
-    const x = (containerW - contentW * scale) / 2;
-    const y = padTop + (availH - contentH * scale) / 2;
-    setTransform({ x, y, scale });
+    const availableWidth = containerW - padX * 2;
+    const availableHeight = containerH - padTop - padBottom;
+    const scale = Math.max(0.05, Math.min(availableWidth / contentW, availableHeight / contentH, 1.5));
+    setTransform({
+      x: (containerW - contentW * scale) / 2,
+      y: padTop + (availableHeight - contentHeight(contentH) * scale) / 2,
+      scale,
+    });
   }, []);
 
   return { transform, setTransform, zoomIn, zoomOut, fitToView };
+}
+
+function contentHeight(value: number): number {
+  return Math.max(value, 1);
 }
 
 interface CanvasProps {
   children: ReactNode;
   contentWidth: number;
   contentHeight: number;
-  transform: Transform;
-  setTransform: React.Dispatch<React.SetStateAction<Transform>>;
+  transform: ViewportState;
+  setTransform: React.Dispatch<React.SetStateAction<ViewportState>>;
+  onBackgroundPointerDown?: (point: CanvasPoint, event: React.PointerEvent<HTMLDivElement>) => void;
+  onBackgroundPointerMove?: (point: CanvasPoint, event: React.PointerEvent<HTMLDivElement>) => void;
+  onBackgroundPointerUp?: (point: CanvasPoint, event: React.PointerEvent<HTMLDivElement>) => void;
 }
 
-export function InfiniteCanvas({ children, contentWidth, contentHeight, transform, setTransform }: CanvasProps) {
+export function InfiniteCanvas({
+  children,
+  contentWidth,
+  contentHeight: canvasContentHeight,
+  transform,
+  setTransform,
+  onBackgroundPointerDown,
+  onBackgroundPointerMove,
+  onBackgroundPointerUp,
+}: CanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const isPanning = useRef(false);
-  const panStart = useRef({ x: 0, y: 0, tx: 0, ty: 0 });
-  const middleButtonDown = useRef(false);
+  const isPanningRef = useRef(false);
+  const selectionPointerRef = useRef<number | null>(null);
+  const panStartRef = useRef({ x: 0, y: 0, tx: 0, ty: 0 });
+  const [isPanning, setIsPanning] = useState(false);
 
-  // Ctrl+Wheel → zoom to cursor point
-  const handleWheel = useCallback((e: WheelEvent) => {
-    if (!e.ctrlKey && !e.metaKey) return;
-    e.preventDefault();
+  const toWorldPoint = useCallback((clientX: number, clientY: number): CanvasPoint => {
+    const rect = containerRef.current?.getBoundingClientRect();
+    const localX = clientX - (rect?.left ?? 0);
+    const localY = clientY - (rect?.top ?? 0);
+    return {
+      x: (localX - transform.x) / transform.scale,
+      y: (localY - transform.y) / transform.scale,
+    };
+  }, [transform.scale, transform.x, transform.y]);
 
+  const handleWheel = useCallback((event: WheelEvent) => {
+    event.preventDefault();
     const container = containerRef.current;
     if (!container) return;
-    const rect = container.getBoundingClientRect();
-    const cursorX = e.clientX - rect.left;
-    const cursorY = e.clientY - rect.top;
 
-    setTransform((t) => {
-      const factor = Math.exp(-e.deltaY * ZOOM_FACTOR);
-      const newScale = Math.max(MIN_SCALE, Math.min(t.scale * factor, MAX_SCALE));
-      // Keep point under cursor stationary
-      const wx = (cursorX - t.x) / t.scale;
-      const wy = (cursorY - t.y) / t.scale;
-      const newX = cursorX - wx * newScale;
-      const newY = cursorY - wy * newScale;
-      return { x: newX, y: newY, scale: newScale };
-    });
+    if (event.ctrlKey || event.metaKey) {
+      const rect = container.getBoundingClientRect();
+      const cursorX = event.clientX - rect.left;
+      const cursorY = event.clientY - rect.top;
+      setTransform((current) => {
+        const factor = Math.exp(-event.deltaY * ZOOM_FACTOR);
+        const nextScale = Math.max(MIN_SCALE, Math.min(current.scale * factor, MAX_SCALE));
+        const worldX = (cursorX - current.x) / current.scale;
+        const worldY = (cursorY - current.y) / current.scale;
+        return {
+          x: cursorX - worldX * nextScale,
+          y: cursorY - worldY * nextScale,
+          scale: nextScale,
+        };
+      });
+      return;
+    }
+
+    setTransform((current) => ({
+      ...current,
+      x: current.x - (event.shiftKey ? event.deltaY : event.deltaX),
+      y: current.y - (event.shiftKey ? event.deltaX : event.deltaY),
+    }));
   }, [setTransform]);
 
-  // Middle mouse button pan
-  const handlePointerDown = useCallback((e: React.PointerEvent) => {
-    // Middle button (button === 1)
-    if (e.button === 1) {
-      e.preventDefault();
-      middleButtonDown.current = true;
-      isPanning.current = true;
-      panStart.current = { x: e.clientX, y: e.clientY, tx: transform.x, ty: transform.y };
-      (e.target as HTMLElement).setPointerCapture(e.pointerId);
+  const handlePointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.button === 1) {
+      event.preventDefault();
+      isPanningRef.current = true;
+      setIsPanning(true);
+      panStartRef.current = {
+        x: event.clientX,
+        y: event.clientY,
+        tx: transform.x,
+        ty: transform.y,
+      };
+      event.currentTarget.setPointerCapture(event.pointerId);
+      return;
     }
-  }, [transform.x, transform.y]);
 
-  const handlePointerMove = useCallback((e: React.PointerEvent) => {
-    if (!isPanning.current) return;
-    const dx = e.clientX - panStart.current.x;
-    const dy = e.clientY - panStart.current.y;
-    setTransform((t) => ({ ...t, x: panStart.current.tx + dx, y: panStart.current.ty + dy }));
-  }, [setTransform]);
+    const target = event.target as HTMLElement;
+    if (event.button !== 0 || target.closest('[data-canvas-interactive="true"]')) return;
+    selectionPointerRef.current = event.pointerId;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    onBackgroundPointerDown?.(toWorldPoint(event.clientX, event.clientY), event);
+  }, [onBackgroundPointerDown, toWorldPoint, transform.x, transform.y]);
 
-  const handlePointerUp = useCallback((e: React.PointerEvent) => {
-    if (e.button === 1 || middleButtonDown.current) {
-      isPanning.current = false;
-      middleButtonDown.current = false;
-      (e.target as HTMLElement).releasePointerCapture(e.pointerId);
+  const handlePointerMove = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    if (isPanningRef.current) {
+      const deltaX = event.clientX - panStartRef.current.x;
+      const deltaY = event.clientY - panStartRef.current.y;
+      setTransform((current) => ({
+        ...current,
+        x: panStartRef.current.tx + deltaX,
+        y: panStartRef.current.ty + deltaY,
+      }));
+      return;
     }
-  }, []);
+    if (selectionPointerRef.current === event.pointerId) {
+      onBackgroundPointerMove?.(toWorldPoint(event.clientX, event.clientY), event);
+    }
+  }, [onBackgroundPointerMove, setTransform, toWorldPoint]);
 
-  // Attach passive:false wheel listener
+  const finishPointerInteraction = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    if (isPanningRef.current) {
+      isPanningRef.current = false;
+      setIsPanning(false);
+    }
+    if (selectionPointerRef.current === event.pointerId) {
+      onBackgroundPointerUp?.(toWorldPoint(event.clientX, event.clientY), event);
+      selectionPointerRef.current = null;
+    }
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  }, [onBackgroundPointerUp, toWorldPoint]);
+
   useEffect(() => {
-    const el = containerRef.current;
-    if (!el) return;
-    el.addEventListener('wheel', handleWheel, { passive: false });
-    return () => el.removeEventListener('wheel', handleWheel);
+    const element = containerRef.current;
+    if (!element) return;
+    element.addEventListener('wheel', handleWheel, { passive: false });
+    return () => element.removeEventListener('wheel', handleWheel);
   }, [handleWheel]);
 
-  // Prevent default middle-click auto-scroll
   useEffect(() => {
-    const el = containerRef.current;
-    if (!el) return;
-    const preventMiddle = (e: MouseEvent) => { if (e.button === 1) e.preventDefault(); };
-    el.addEventListener('mousedown', preventMiddle);
-    return () => el.removeEventListener('mousedown', preventMiddle);
+    const element = containerRef.current;
+    if (!element) return;
+    const preventMiddleAutoScroll = (event: MouseEvent) => {
+      if (event.button === 1) event.preventDefault();
+    };
+    element.addEventListener('mousedown', preventMiddleAutoScroll);
+    return () => element.removeEventListener('mousedown', preventMiddleAutoScroll);
   }, []);
 
-  // Adaptive grid
   let gridSize = 20 * transform.scale;
   if (gridSize < 15) gridSize *= 2;
   const gridOffsetX = transform.x % gridSize;
   const gridOffsetY = transform.y % gridSize;
-
-  const cursorStyle = isPanning.current ? 'grabbing' : middleButtonDown.current ? 'grab' : 'default';
 
   return (
     <div
@@ -149,22 +189,22 @@ export function InfiniteCanvas({ children, contentWidth, contentHeight, transfor
       className="absolute inset-0 overflow-hidden"
       style={{
         backgroundColor: '#edeff3',
-        backgroundImage: `radial-gradient(circle, #c8ccd4 1px, transparent 1px)`,
+        backgroundImage: 'radial-gradient(circle, #c8ccd4 1px, transparent 1px)',
         backgroundSize: `${gridSize}px ${gridSize}px`,
         backgroundPosition: `${gridOffsetX}px ${gridOffsetY}px`,
-        cursor: cursorStyle,
+        cursor: isPanning ? 'grabbing' : 'default',
       }}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
-      onPointerUp={handlePointerUp}
-      onPointerLeave={handlePointerUp}
+      onPointerUp={finishPointerInteraction}
+      onPointerCancel={finishPointerInteraction}
     >
       <div
         style={{
           transform: `translate(${transform.x}px, ${transform.y}px) scale(${transform.scale})`,
           transformOrigin: '0 0',
           width: contentWidth,
-          height: contentHeight,
+          height: canvasContentHeight,
           position: 'absolute',
           top: 0,
           left: 0,

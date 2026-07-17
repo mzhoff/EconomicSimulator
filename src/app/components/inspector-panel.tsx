@@ -1,244 +1,339 @@
-import { useState } from 'react';
-import { type MetricDef, type Scenario, type ModelState, type MetricDomain, type MetricRole, fmt } from './metric-engine';
-import { Info, GitBranch, BarChart3, ChevronRight, PanelRightClose, PanelRightOpen, Pencil, Check, X } from 'lucide-react';
+import {
+  AlertTriangle,
+  BarChart3,
+  ChevronRight,
+  GitBranch,
+  Info,
+  PanelRightClose,
+  PanelRightOpen,
+  Sparkles,
+  Target,
+} from 'lucide-react';
+import {
+  fmt,
+  getCalculationRelations,
+  type ImpactResult,
+  type MetricDef,
+  type ModelState,
+  type Shock,
+  type ThresholdResult,
+} from './metric-engine';
 
 interface InspectorPanelProps {
   metrics: Record<string, MetricDef>;
+  baselineMetrics: Record<string, MetricDef>;
   model: ModelState;
   selectedId: string;
-  scenarioKey: string;
-  scenarios: Record<string, Scenario>;
+  scenarioId: string;
+  thresholds: {
+    breakEven: ThresholdResult;
+    payback12: ThresholdResult;
+    payback24: ThresholdResult;
+  };
+  impact: ImpactResult | null;
+  shock: Shock;
   collapsed: boolean;
   onToggle: () => void;
-  onUpdateMetric?: (id: string, updates: Partial<Pick<MetricDef, 'name' | 'description' | 'domain' | 'role'>>) => void;
   onSelect: (id: string) => void;
+  onSetNorthStar: (id: string) => void;
+  onChangeShock: (shock: Shock) => void;
 }
 
-function getHealthLabel(value: number): { text: string; color: string } {
-  if (value >= 75) return { text: 'Strong', color: 'text-emerald-600' };
-  if (value >= 50) return { text: 'Moderate', color: 'text-amber-600' };
-  return { text: 'Needs work', color: 'text-red-600' };
+const summaryMetrics = [
+  { id: 'rental_revenue', label: 'Арендная выручка' },
+  { id: 'cash_contribution', label: 'Денежный вклад' },
+  { id: 'profit_before_tax', label: 'Прибыль до налогов' },
+  { id: 'payback_months', label: 'Окупаемость' },
+];
+
+function scenarioDelta(current: number | null, baseline: number | null): string | null {
+  if (current === null || baseline === null || Math.abs(baseline) < 1e-12) return null;
+  const delta = ((current - baseline) / Math.abs(baseline)) * 100;
+  if (Math.abs(delta) < 0.05) return null;
+  return `${delta > 0 ? '+' : ''}${delta.toFixed(1)}% vs Base`;
 }
 
-function getStatusBadge(id: string, value: number): { text: string; color: string } | null {
-  if (id === 'ltvCac') return value >= 3 ? { text: 'Healthy', color: 'bg-emerald-100 text-emerald-700' } : { text: 'Risk', color: 'bg-red-100 text-red-700' };
-  if (id === 'payback') return value <= 12 ? { text: 'OK', color: 'bg-emerald-100 text-emerald-700' } : { text: 'Long', color: 'bg-amber-100 text-amber-700' };
-  if (id === 'grossMargin') return value >= 50 ? { text: 'Healthy', color: 'bg-emerald-100 text-emerald-700' } : { text: 'Low', color: 'bg-amber-100 text-amber-700' };
-  return null;
+function thresholdText(result: ThresholdResult): string {
+  return result.reached && result.value !== null ? `${result.value.toFixed(2)} аренд/день` : 'Не достигнута';
 }
 
-export function InspectorPanel({ metrics, model, selectedId, scenarioKey, scenarios, collapsed, onToggle, onUpdateMetric, onSelect }: InspectorPanelProps) {
+function shockDisplayAmount(shock: Shock): number {
+  return shock.kind === 'absolute' ? shock.amount : shock.amount * 100;
+}
+
+export function InspectorPanel({
+  metrics,
+  baselineMetrics,
+  model,
+  selectedId,
+  scenarioId,
+  thresholds,
+  impact,
+  shock,
+  collapsed,
+  onToggle,
+  onSelect,
+  onSetNorthStar,
+  onChangeShock,
+}: InspectorPanelProps) {
   const selected = metrics[selectedId];
-  const [editing, setEditing] = useState(false);
-  const [editName, setEditName] = useState('');
-  const [editDesc, setEditDesc] = useState('');
-
-  if (!selected) return null;
-
-  const parents = model.edges.filter(e => e.to === selectedId).map(e => metrics[e.from]).filter(Boolean);
-  const children = model.edges.filter(e => e.from === selectedId).map(e => metrics[e.to]).filter(Boolean);
-  const badge = getStatusBadge(selectedId, selected.value);
-
-  const summaryMetrics = [
-    { id: 'ltvCac', label: 'LTV / CAC' },
-    { id: 'payback', label: 'CAC Payback' },
-    { id: 'grossMargin', label: 'Gross Margin' },
-    { id: 'health', label: 'Health Score' },
-  ];
-
-  const healthStatus = getHealthLabel(metrics.health?.value ?? 0);
-
-  const startEdit = () => {
-    setEditName(selected.name);
-    setEditDesc(selected.description);
-    setEditing(true);
-  };
-
-  const saveEdit = () => {
-    onUpdateMetric?.(selectedId, { name: editName, description: editDesc });
-    setEditing(false);
-  };
+  const relations = getCalculationRelations(model);
+  const parents = relations
+    .filter((relation) => relation.to === selectedId)
+    .map((relation) => metrics[relation.from])
+    .filter(Boolean);
+  const children = relations
+    .filter((relation) => relation.from === selectedId)
+    .map((relation) => metrics[relation.to])
+    .filter(Boolean);
+  const selectedIsInput = selected?.kind !== 'derived';
+  const activeNorthStar = metrics[model.activeNorthStarId];
 
   return (
     <>
       {collapsed && (
         <button
+          data-canvas-interactive="true"
           onClick={onToggle}
-          onPointerDown={(e) => e.stopPropagation()}
+          onPointerDown={(event) => event.stopPropagation()}
           className="absolute top-[0.75rem] right-[0.75rem] z-30 flex items-center justify-center size-[2rem] rounded-[var(--radius-md)] border border-border bg-card text-muted-foreground hover:text-foreground shadow-md transition-all cursor-pointer"
-          title="Show inspector"
+          title="Показать инспектор"
         >
           <PanelRightOpen className="size-[1rem]" />
         </button>
       )}
 
       <aside
+        data-canvas-interactive="true"
         className={`absolute top-0 right-0 bottom-0 z-20 flex flex-col bg-card/95 backdrop-blur-sm border-l border-border transition-transform duration-300 ease-in-out ${
           collapsed ? 'translate-x-full' : 'translate-x-0'
         }`}
-        style={{ width: '19rem' }}
-        onPointerDown={(e) => e.stopPropagation()}
-        onMouseDown={(e) => e.stopPropagation()}
+        style={{ width: '20rem' }}
+        onPointerDown={(event) => event.stopPropagation()}
       >
         <div className="flex items-center justify-between border-b border-border px-[1rem] py-[0.625rem]">
           <div className="flex items-center gap-[0.5rem]">
             <Info className="size-[0.875rem] text-muted-foreground" />
-            <span className="text-[0.8125rem] text-foreground" style={{ fontWeight: 600 }}>Inspector</span>
+            <span className="text-[0.8125rem] text-foreground" style={{ fontWeight: 600 }}>Инспектор</span>
           </div>
-          <button onClick={onToggle} className="flex items-center justify-center size-[1.5rem] rounded-[var(--radius-sm)] text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer" title="Collapse">
+          <button
+            onClick={onToggle}
+            className="flex items-center justify-center size-[1.5rem] rounded-[var(--radius-sm)] text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
+            title="Свернуть"
+          >
             <PanelRightClose className="size-[0.875rem]" />
           </button>
         </div>
 
         <div className="flex-1 overflow-y-auto">
-          {/* Selected metric detail */}
-          <div className="border-b border-border p-[1rem]">
-            <div className="flex items-center justify-between mb-[0.125rem]">
-              <span className="text-[0.625rem] uppercase tracking-wider text-muted-foreground">Selected</span>
-              <div className="flex items-center gap-[0.25rem]">
-                {badge && (
-                  <span className={`text-[0.5625rem] px-[0.375rem] py-[0.0625rem] rounded-full ${badge.color}`} style={{ fontWeight: 600 }}>{badge.text}</span>
-                )}
-                {!editing && onUpdateMetric && (
-                  <button onClick={startEdit} className="flex items-center justify-center size-[1.25rem] rounded-[var(--radius-sm)] text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer" title="Edit">
-                    <Pencil className="size-[0.625rem]" />
-                  </button>
-                )}
-              </div>
-            </div>
-
-            {editing ? (
-              <div className="space-y-[0.375rem] mt-[0.25rem]">
-                <input
-                  value={editName}
-                  onChange={(e) => setEditName(e.target.value)}
-                  className="w-full rounded-[var(--radius-md)] border border-border bg-background px-[0.5rem] py-[0.25rem] text-[0.875rem] text-foreground outline-none focus:border-primary"
-                  style={{ fontWeight: 600 }}
-                />
-                <input
-                  value={editDesc}
-                  onChange={(e) => setEditDesc(e.target.value)}
-                  className="w-full rounded-[var(--radius-md)] border border-border bg-background px-[0.5rem] py-[0.25rem] text-[0.6875rem] text-foreground outline-none focus:border-primary"
-                />
-                <div className="flex gap-[0.25rem]">
-                  <button onClick={saveEdit} className="flex items-center gap-[0.125rem] rounded-[var(--radius-md)] bg-primary text-primary-foreground px-[0.5rem] py-[0.25rem] text-[0.6875rem] cursor-pointer" style={{ fontWeight: 500 }}>
-                    <Check className="size-[0.625rem]" /> Save
-                  </button>
-                  <button onClick={() => setEditing(false)} className="flex items-center gap-[0.125rem] rounded-[var(--radius-md)] border border-border px-[0.5rem] py-[0.25rem] text-[0.6875rem] text-muted-foreground cursor-pointer" style={{ fontWeight: 500 }}>
-                    <X className="size-[0.625rem]" /> Cancel
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <>
-                <h3 className="text-[1rem] text-foreground mt-[0.125rem]" style={{ fontWeight: 600, lineHeight: 1.3 }}>{selected.name}</h3>
-                <p className="text-[0.6875rem] text-muted-foreground mt-[0.125rem]" style={{ lineHeight: 1.4 }}>{selected.description}</p>
-              </>
-            )}
-
-            <div className="text-[1.5rem] text-foreground mt-[0.5rem]" style={{ fontWeight: 700 }}>{fmt(selected.value, selected.unit)}</div>
-
-            {selected.formulaDisplay && (
-              <div className="mt-[0.25rem] rounded-[var(--radius-md)] bg-secondary/50 px-[0.5rem] py-[0.25rem] text-[0.625rem] font-mono text-muted-foreground">
-                ƒ = {selected.formulaDisplay}
-              </div>
-            )}
-
-            <div className="mt-[0.5rem] space-y-[0.25rem]">
-              <Row label="Type" value={selected.kind} />
-              <Row label="Domain" value={selected.domain} capitalize />
-              <Row label="Role" value={selected.role.replace('_', ' ')} capitalize />
-              <Row label="Unit" value={selected.unit} />
-              <Row label="Status" value={selected.status} capitalize />
-              <Row label="Scenario" value={scenarios[scenarioKey].label} />
-            </div>
-          </div>
-
-          {/* Dependencies */}
-          {(parents.length > 0 || children.length > 0) && (
-            <div className="border-b border-border p-[1rem]">
-              <div className="flex items-center gap-[0.25rem] mb-[0.5rem]">
-                <GitBranch className="size-[0.75rem] text-muted-foreground" />
-                <span className="text-[0.6875rem] text-foreground" style={{ fontWeight: 600 }}>Dependencies</span>
-              </div>
-              {parents.length > 0 && (
-                <div className="mb-[0.375rem]">
-                  <span className="text-[0.625rem] text-muted-foreground">Depends on</span>
-                  <div className="mt-[0.125rem] flex flex-wrap gap-[0.25rem]">
-                    {parents.map(p => (
-                      <button key={p.id} onClick={() => onSelect(p.id)} className="bg-secondary text-secondary-foreground rounded-full px-[0.375rem] py-[0.0625rem] text-[0.625rem] hover:bg-accent transition-colors cursor-pointer">{p.name}</button>
-                    ))}
+          {selected && (
+            <>
+              <section className="border-b border-border p-[1rem]">
+                <div className="flex items-start justify-between gap-[0.5rem]">
+                  <div>
+                    <div className="text-[0.9375rem] text-foreground" style={{ fontWeight: 650 }}>{selected.name}</div>
+                    <div className="mt-[0.125rem] text-[1.25rem] text-foreground" style={{ fontWeight: 700 }}>{fmt(selected.value, selected.unit)}</div>
                   </div>
+                  {model.activeNorthStarId === selected.id && <Sparkles className="size-[1rem] text-amber-500" />}
                 </div>
-              )}
-              {children.length > 0 && (
-                <div>
-                  <span className="text-[0.625rem] text-muted-foreground">Drives</span>
-                  <div className="mt-[0.125rem] flex flex-wrap gap-[0.25rem]">
-                    {children.map(c => (
-                      <button key={c.id} onClick={() => onSelect(c.id)} className="inline-flex items-center gap-[0.0625rem] bg-secondary text-secondary-foreground rounded-full px-[0.375rem] py-[0.0625rem] text-[0.625rem] hover:bg-accent transition-colors cursor-pointer">
-                        <ChevronRight className="size-[0.5rem]" />{c.name}
-                      </button>
-                    ))}
+                <p className="mt-[0.5rem] text-[0.6875rem] leading-relaxed text-muted-foreground">{selected.description}</p>
+
+                {model.activeNorthStarId !== selected.id && (
+                  <button
+                    onClick={() => onSetNorthStar(selected.id)}
+                    className="mt-[0.625rem] flex items-center gap-[0.25rem] rounded-[var(--radius-md)] border border-border px-[0.5rem] py-[0.3125rem] text-[0.625rem] text-muted-foreground hover:text-foreground hover:border-primary/50 cursor-pointer"
+                  >
+                    <Target className="size-[0.6875rem]" />
+                    Сделать North Star
+                  </button>
+                )}
+
+                <div className="mt-[0.75rem] space-y-[0.25rem]">
+                  <Row label="Behavior" value={selected.behavior} />
+                  <Row label="Unit" value={selected.unit.symbol} />
+                  <Row label="Grain" value={`${selected.grain.entity} × ${selected.grain.time}`} />
+                  <Row label="Статус знания" value={selected.knowledgeStatus} />
+                  <Row label="Сценарий" value={model.scenarios[scenarioId]?.label ?? scenarioId} />
+                </div>
+
+                <div className="mt-[0.625rem] rounded-[var(--radius-md)] bg-secondary p-[0.5rem]">
+                  <div className="text-[0.5625rem] uppercase tracking-wide text-muted-foreground">Источник</div>
+                  <div className="mt-[0.125rem] text-[0.625rem] text-foreground">{selected.provenance.source}</div>
+                  <div className="text-[0.5625rem] text-muted-foreground">
+                    {selected.provenance.version} · confidence {selected.provenance.confidence}
                   </div>
+                  {selected.provenance.comment && (
+                    <div className="mt-[0.25rem] text-[0.5625rem] leading-relaxed text-muted-foreground">{selected.provenance.comment}</div>
+                  )}
                 </div>
+
+                {selected.validationMessages.map((message) => (
+                  <div key={message} className="mt-[0.5rem] flex gap-[0.25rem] rounded-[var(--radius-md)] bg-amber-50 p-[0.5rem] text-[0.625rem] text-amber-800">
+                    <AlertTriangle className="mt-[0.0625rem] size-[0.6875rem] shrink-0" />
+                    {message}
+                  </div>
+                ))}
+              </section>
+
+              {(parents.length > 0 || children.length > 0) && (
+                <section className="border-b border-border p-[1rem]">
+                  <div className="flex items-center gap-[0.25rem] mb-[0.5rem]">
+                    <GitBranch className="size-[0.75rem] text-muted-foreground" />
+                    <span className="text-[0.6875rem] text-foreground" style={{ fontWeight: 600 }}>Расчётный DAG</span>
+                  </div>
+                  {parents.length > 0 && (
+                    <DependencyGroup label="Зависит от" metrics={parents} onSelect={onSelect} />
+                  )}
+                  {children.length > 0 && (
+                    <DependencyGroup label="Влияет на" metrics={children} onSelect={onSelect} arrows />
+                  )}
+                </section>
               )}
-            </div>
+
+              {selectedIsInput && (
+                <section className="border-b border-border p-[1rem]">
+                  <div className="flex items-center gap-[0.25rem] mb-[0.5rem]">
+                    <BarChart3 className="size-[0.75rem] text-muted-foreground" />
+                    <span className="text-[0.6875rem] text-foreground" style={{ fontWeight: 600 }}>What-if shock</span>
+                  </div>
+                  <div className="grid grid-cols-[1fr_5rem] gap-[0.375rem]">
+                    <select
+                      value={shock.kind}
+                      onChange={(event) => {
+                        const kind = event.target.value as Shock['kind'];
+                        onChangeShock(
+                          kind === 'relative'
+                            ? { kind, amount: 0.1 }
+                            : kind === 'percentage_points'
+                              ? { kind, amount: 0.02 }
+                              : { kind, amount: Math.max(Math.abs(selected.value ?? 0) * 0.1, 1) },
+                        );
+                      }}
+                      className="rounded-[var(--radius-md)] border border-border bg-background px-[0.5rem] py-[0.375rem] text-[0.6875rem] outline-none focus:border-primary"
+                    >
+                      <option value="relative">Относительный, %</option>
+                      <option value="absolute">Абсолютный, +N</option>
+                      <option value="percentage_points" disabled={selected.unit.symbol !== '%'}>Процентные пункты</option>
+                    </select>
+                    <input
+                      type="number"
+                      value={Number(shockDisplayAmount(shock).toFixed(4))}
+                      onChange={(event) => {
+                        const raw = Number(event.target.value);
+                        onChangeShock(
+                          shock.kind === 'absolute'
+                            ? { kind: shock.kind, amount: raw }
+                            : { kind: shock.kind, amount: raw / 100 },
+                        );
+                      }}
+                      className="rounded-[var(--radius-md)] border border-border bg-background px-[0.5rem] py-[0.375rem] text-right text-[0.6875rem] outline-none focus:border-primary"
+                    />
+                  </div>
+
+                  {impact && activeNorthStar && (
+                    <div className="mt-[0.5rem] rounded-[var(--radius-lg)] bg-primary/5 p-[0.625rem]">
+                      <div className="text-[0.5625rem] text-muted-foreground">Влияние на North Star</div>
+                      <div className="mt-[0.125rem] text-[0.6875rem] text-foreground" style={{ fontWeight: 600 }}>{activeNorthStar.name}</div>
+                      <div className="mt-[0.25rem] flex items-center justify-between gap-[0.25rem] text-[0.6875rem]">
+                        <span>{fmt(impact.beforeNorthStar, activeNorthStar.unit)}</span>
+                        <ChevronRight className="size-[0.6875rem] text-muted-foreground" />
+                        <span>{fmt(impact.afterNorthStar, activeNorthStar.unit)}</span>
+                      </div>
+                    </div>
+                  )}
+                </section>
+              )}
+            </>
           )}
 
-          {/* Model Summary */}
-          <div className="p-[1rem]">
+          <section className="border-b border-border p-[1rem]">
+            <div className="flex items-center gap-[0.25rem] mb-[0.5rem]">
+              <Target className="size-[0.75rem] text-muted-foreground" />
+              <span className="text-[0.6875rem] text-foreground" style={{ fontWeight: 600 }}>Критические значения</span>
+            </div>
+            <div className="space-y-[0.375rem]">
+              <ThresholdRow label="Безубыточность" value={thresholdText(thresholds.breakEven)} />
+              <ThresholdRow label="Payback ≤ 12 мес." value={thresholdText(thresholds.payback12)} />
+              <ThresholdRow label="Payback ≤ 24 мес." value={thresholdText(thresholds.payback24)} />
+            </div>
+          </section>
+
+          <section className="p-[1rem]">
             <div className="flex items-center gap-[0.25rem] mb-[0.5rem]">
               <BarChart3 className="size-[0.75rem] text-muted-foreground" />
-              <span className="text-[0.6875rem] text-foreground" style={{ fontWeight: 600 }}>Model Summary</span>
+              <span className="text-[0.6875rem] text-foreground" style={{ fontWeight: 600 }}>Экономика станции</span>
             </div>
             <div className="space-y-[0.375rem]">
               {summaryMetrics.map(({ id, label }) => {
-                const m = metrics[id];
-                if (!m) return null;
-                const sb = getStatusBadge(id, m.value);
+                const metric = metrics[id];
+                if (!metric) return null;
+                const delta = scenarioDelta(metric.value, baselineMetrics[id]?.value ?? null);
                 return (
-                  <div key={id} className="flex items-center justify-between rounded-[var(--radius-md)] border border-border p-[0.5rem]">
+                  <button
+                    key={id}
+                    onClick={() => onSelect(id)}
+                    className="w-full flex items-center justify-between rounded-[var(--radius-md)] border border-border p-[0.5rem] text-left hover:border-primary/40 cursor-pointer"
+                  >
                     <div>
                       <div className="text-[0.625rem] text-muted-foreground">{label}</div>
-                      <div className="text-[0.875rem] text-foreground" style={{ fontWeight: 600 }}>{fmt(m.value, m.unit)}</div>
+                      <div className="text-[0.875rem] text-foreground" style={{ fontWeight: 600 }}>{fmt(metric.value, metric.unit)}</div>
                     </div>
-                    {sb && (
-                      <span className={`text-[0.5625rem] px-[0.25rem] py-[0.0625rem] rounded-full ${sb.color}`} style={{ fontWeight: 500 }}>{sb.text}</span>
-                    )}
-                  </div>
+                    {delta && <span className="text-[0.5625rem] text-violet-600">{delta}</span>}
+                  </button>
                 );
               })}
             </div>
-
-            <div className="mt-[0.75rem] rounded-[var(--radius-lg)] bg-secondary p-[0.625rem]">
-              <div className="flex items-center justify-between">
-                <span className="text-[0.6875rem] text-muted-foreground">Overall Health</span>
-                <span className={`text-[0.6875rem] ${healthStatus.color}`} style={{ fontWeight: 600 }}>{healthStatus.text}</span>
-              </div>
-              <div className="mt-[0.25rem] h-[0.25rem] rounded-full bg-border overflow-hidden">
-                <div
-                  className="h-full rounded-full transition-all duration-500"
-                  style={{
-                    width: `${Math.min(metrics.health?.value ?? 0, 100)}%`,
-                    backgroundColor: (metrics.health?.value ?? 0) >= 75 ? '#16a34a' : (metrics.health?.value ?? 0) >= 50 ? '#d97706' : '#dc2626'
-                  }}
-                />
-              </div>
-              <div className="mt-[0.125rem] text-[1rem] text-foreground" style={{ fontWeight: 700 }}>{(metrics.health?.value ?? 0).toFixed(0)} / 100</div>
-            </div>
-          </div>
+          </section>
         </div>
       </aside>
     </>
   );
 }
 
-function Row({ label, value, capitalize }: { label: string; value: string; capitalize?: boolean }) {
+function Row({ label, value }: { label: string; value: string }) {
   return (
-    <div className="flex justify-between text-[0.6875rem]">
+    <div className="flex justify-between gap-[0.5rem] text-[0.625rem]">
       <span className="text-muted-foreground">{label}</span>
-      <span className={`text-foreground ${capitalize ? 'capitalize' : ''}`} style={{ fontWeight: 500 }}>{value}</span>
+      <span className="text-foreground text-right capitalize" style={{ fontWeight: 500 }}>{value}</span>
+    </div>
+  );
+}
+
+function DependencyGroup({
+  label,
+  metrics,
+  onSelect,
+  arrows,
+}: {
+  label: string;
+  metrics: MetricDef[];
+  onSelect: (id: string) => void;
+  arrows?: boolean;
+}) {
+  return (
+    <div className="mb-[0.375rem] last:mb-0">
+      <span className="text-[0.625rem] text-muted-foreground">{label}</span>
+      <div className="mt-[0.125rem] flex flex-wrap gap-[0.25rem]">
+        {metrics.map((metric) => (
+          <button
+            key={metric.id}
+            onClick={() => onSelect(metric.id)}
+            className="inline-flex items-center gap-[0.0625rem] bg-secondary text-secondary-foreground rounded-full px-[0.375rem] py-[0.0625rem] text-[0.625rem] hover:bg-accent cursor-pointer"
+          >
+            {arrows && <ChevronRight className="size-[0.5rem]" />}
+            {metric.name}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ThresholdRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-[var(--radius-md)] border border-border p-[0.5rem]">
+      <div className="text-[0.5625rem] text-muted-foreground">{label}</div>
+      <div className="text-[0.75rem] text-foreground" style={{ fontWeight: 600 }}>{value}</div>
     </div>
   );
 }

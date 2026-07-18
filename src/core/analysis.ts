@@ -68,7 +68,9 @@ export function computeGraphFocus(
   }
 
   const backboneEdges = new Set<string>();
-  const northStarAncestors = reachableNodes(model.activeNorthStarId, reverseAdjacency);
+  const northStarAncestors = model.activeNorthStarId
+    ? reachableNodes(model.activeNorthStarId, reverseAdjacency)
+    : new Set<string>();
   for (const relation of calculationRelations) {
     if (northStarAncestors.has(relation.from) && northStarAncestors.has(relation.to)) {
       backboneEdges.add(relationKey(relation.from, relation.to));
@@ -188,8 +190,8 @@ export function computeImpact(
     northStarId,
     beforeInput: selected.value,
     afterInput: changedValue,
-    beforeNorthStar: baseline.metrics[northStarId]?.value ?? null,
-    afterNorthStar: changed.metrics[northStarId]?.value ?? null,
+    beforeNorthStar: northStarId ? baseline.metrics[northStarId]?.value ?? null : null,
+    afterNorthStar: northStarId ? changed.metrics[northStarId]?.value ?? null : null,
     deltas,
   };
 }

@@ -22,6 +22,8 @@
 3. [Продуктовый и технический roadmap](docs/product-roadmap.md)
 4. [Первый этап: TokBeri Foundation](docs/phase-1-tokberi-foundation.md)
 5. [Что реализовано в Phase 1](docs/phase-1-implementation.md)
+6. [Контракт Universal Model Builder](docs/phase-2-universal-builder.md)
+7. [Что реализовано в Phase 2](docs/phase-2-implementation.md)
 
 ## Зафиксированные решения
 
@@ -35,8 +37,8 @@
   `localStorage`;
 - первый прикладной шаблон — экономика TokBeri без недостоверного
   франчайзингового слоя;
-- `Stock / Flow / Rate / Event` — базовая классификация временного поведения
-  данных, но внедряется поэтапно.
+- в пользовательском графе сейчас используются только `Stock / Flow / Rate`;
+- `Event` отложен до отдельного слоя импорта сырых данных.
 
 ## Локальный запуск
 

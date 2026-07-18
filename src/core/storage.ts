@@ -1,12 +1,19 @@
 import { createTokBeriModel } from './tokberi-template';
 import { MODEL_SCHEMA_VERSION } from './model';
 import type { ModelState, ViewportState, WorkspaceDocument } from './model';
+import { isLegacyWorkspaceDocument, migrateLegacyWorkspaceDocument } from './migration';
 import { parseWorkspaceJson, validateWorkspaceDocument } from './schema';
 
-export const WORKSPACE_STORAGE_KEY = 'economic-simulator:workspace:v1';
-export const LAST_VALID_STORAGE_KEY = 'economic-simulator:last-valid:v1';
-export const MIGRATION_BACKUP_KEY = 'economic-simulator:migration-backup:v1';
-const LEGACY_STORAGE_KEYS = ['economic-simulator:workspace', 'economic-simulator:model:v0'];
+export const WORKSPACE_STORAGE_KEY = 'economic-simulator:workspace:v2';
+export const LAST_VALID_STORAGE_KEY = 'economic-simulator:last-valid:v2';
+export const MIGRATION_BACKUP_KEY = 'economic-simulator:migration-backup:v2';
+export const LEGACY_WORKSPACE_STORAGE_KEY = 'economic-simulator:workspace:v1';
+const LEGACY_STORAGE_KEYS = [
+  LEGACY_WORKSPACE_STORAGE_KEY,
+  'economic-simulator:last-valid:v1',
+  'economic-simulator:workspace',
+  'economic-simulator:model:v0',
+];
 
 export interface StorageResult<T> {
   value: T;
@@ -32,16 +39,49 @@ export function serializeWorkspace(workspace: WorkspaceDocument): string {
 }
 
 export function importWorkspace(text: string): ReturnType<typeof parseWorkspaceJson> {
-  return parseWorkspaceJson(text);
+  const current = parseWorkspaceJson(text);
+  if (current.ok) return current;
+  try {
+    const raw = JSON.parse(text) as unknown;
+    if (!isLegacyWorkspaceDocument(raw)) return current;
+    return validateWorkspaceDocument(migrateLegacyWorkspaceDocument(raw));
+  } catch {
+    return current;
+  }
 }
 
-function backupLegacyStorage(storage: Storage): void {
+function migrateLegacyStorage(storage: Storage): StorageResult<WorkspaceDocument> | null {
   for (const key of LEGACY_STORAGE_KEYS) {
-    const legacy = storage.getItem(key);
-    if (!legacy) continue;
-    storage.setItem(MIGRATION_BACKUP_KEY, legacy);
-    return;
+    const serialized = storage.getItem(key);
+    if (!serialized) continue;
+    try {
+      const raw = JSON.parse(serialized) as unknown;
+      if (!isLegacyWorkspaceDocument(raw)) continue;
+      storage.setItem(MIGRATION_BACKUP_KEY, serialized);
+      const migrated = migrateLegacyWorkspaceDocument(raw);
+      const checked = validateWorkspaceDocument(migrated);
+      if (!checked.ok) {
+        return {
+          value: createWorkspaceDocument(),
+          warning: `Старая модель сохранена в backup, но не мигрирована: ${checked.issues[0]?.message ?? 'ошибка схемы'}`,
+        };
+      }
+      const migratedSerialized = serializeWorkspace(checked.workspace);
+      storage.setItem(WORKSPACE_STORAGE_KEY, migratedSerialized);
+      storage.setItem(LAST_VALID_STORAGE_KEY, migratedSerialized);
+      return {
+        value: checked.workspace,
+        warning: 'Локальная модель безопасно обновлена до schema v2; исходный JSON сохранён в backup.',
+      };
+    } catch {
+      storage.setItem(MIGRATION_BACKUP_KEY, serialized);
+      return {
+        value: createWorkspaceDocument(),
+        warning: 'Старая модель сохранена в backup, но её не удалось прочитать.',
+      };
+    }
   }
+  return null;
 }
 
 export function loadWorkspace(storage: Storage | undefined = globalThis.localStorage): StorageResult<WorkspaceDocument> {
@@ -60,7 +100,8 @@ export function loadWorkspace(storage: Storage | undefined = globalThis.localSto
       if (parsed.ok) return { value: parsed.workspace, warning: 'Основной autosave повреждён; восстановлена последняя валидная версия.' };
     }
 
-    backupLegacyStorage(storage);
+    const migrated = migrateLegacyStorage(storage);
+    if (migrated) return migrated;
     return current
       ? { value: fallback, warning: 'Сохранённая модель не прошла проверку. Открыт безопасный шаблон TokBeri.' }
       : { value: fallback };

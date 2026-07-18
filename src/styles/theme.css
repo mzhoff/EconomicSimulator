@@ -231,4 +231,30 @@
   .context-action:hover {
     background: var(--accent);
   }
+
+  .model-menu-action {
+    display: flex;
+    width: 1.5rem;
+    height: 1.5rem;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--radius-sm);
+    color: var(--muted-foreground);
+    cursor: pointer;
+  }
+
+  .model-menu-action:hover {
+    color: var(--foreground);
+    background: var(--accent);
+  }
+
+  .model-menu-action:disabled {
+    opacity: 0.3;
+    cursor: not-allowed;
+  }
+
+  .model-menu-action svg {
+    width: 0.6875rem;
+    height: 0.6875rem;
+  }
 }

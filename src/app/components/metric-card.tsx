@@ -2,26 +2,14 @@ import { useCallback, useRef } from 'react';
 import {
   Activity,
   Database,
-  Eye,
-  Shield,
   Sparkles,
-  Target,
   Trash2,
   TrendingDown,
   TrendingUp,
 } from 'lucide-react';
-import { fmt, type MetricDef } from './metric-engine';
-
-const roleIcons: Record<string, React.ReactNode> = {
-  north_star: <Sparkles className="size-[0.875rem] text-amber-500" />,
-  guardrail: <Shield className="size-[0.875rem] text-blue-500" />,
-  constraint: <Shield className="size-[0.875rem] text-blue-500" />,
-  output: <Target className="size-[0.875rem] text-emerald-600" />,
-  driver: <Activity className="size-[0.875rem] text-violet-500" />,
-  input: <Database className="size-[0.875rem] text-muted-foreground" />,
-  diagnostic: <Eye className="size-[0.875rem] text-sky-500" />,
-  intermediate: <TrendingUp className="size-[0.875rem] text-orange-500" />,
-};
+import type { MetricDef } from '../../core/model';
+import { fmt } from '../../core/presentation';
+import { getMetricCardSize } from './metric-geometry';
 
 const statusColors: Record<string, string> = {
   valid: 'border-border',
@@ -40,6 +28,8 @@ interface MetricCardProps {
   onContextMenu?: (id: string, event: React.MouseEvent) => void;
   delta?: number;
   impactActive: boolean;
+  onConnectionPointerDown?: (id: string, event: React.PointerEvent<HTMLButtonElement>) => void;
+  isNorthStar?: boolean;
 }
 
 export function MetricCard({
@@ -52,9 +42,19 @@ export function MetricCard({
   onContextMenu,
   delta,
   impactActive,
+  onConnectionPointerDown,
+  isNorthStar = false,
 }: MetricCardProps) {
   const isInput = metric.kind !== 'derived';
   const hasDelta = delta !== undefined && Math.abs(delta) > 0.0001;
+  const geometry = getMetricCardSize(metric.behavior);
+  const isStock = metric.behavior === 'stock';
+  const isRate = metric.behavior === 'rate';
+  const behaviorIcon = metric.behavior === 'stock'
+    ? <Database className="size-[0.875rem] text-sky-600" />
+    : metric.behavior === 'rate'
+      ? <Activity className="size-[0.875rem] text-violet-500" />
+      : <TrendingUp className="size-[0.875rem] text-emerald-600" />;
   const dragTimerRef = useRef<number | null>(null);
   const didDragRef = useRef(false);
 
@@ -98,7 +98,13 @@ export function MetricCard({
       data-canvas-interactive="true"
       data-metric-id={metric.id}
       className="absolute select-none"
-      style={{ left: metric.position.x, top: metric.position.y, width: '17rem', zIndex: selected ? 10 : 1 }}
+      style={{
+        left: metric.position.x,
+        top: metric.position.y,
+        width: geometry.width,
+        height: geometry.height,
+        zIndex: selected ? 10 : 1,
+      }}
       onPointerDown={handlePointerDown}
       onClick={handleClick}
       onContextMenu={(event) => {
@@ -109,18 +115,21 @@ export function MetricCard({
     >
       <div
         title={metric.validationMessages.join('\n')}
-        className={`rounded-[var(--radius-xl)] border p-[0.875rem] transition-all duration-150 cursor-pointer group ${
+        className={`relative flex h-full flex-col overflow-visible border transition-all duration-150 cursor-pointer group ${
           selected
             ? 'border-primary bg-card shadow-[0_0_0_2px_var(--primary)]'
             : relationHovered
               ? 'border-sky-400 bg-card shadow-[0_0_0_2px_rgba(14,165,233,0.22)]'
             : `${statusColors[metric.validationStatus] ?? 'border-border'} bg-card hover:border-muted-foreground/30 hover:shadow-md`
-        }`}
+        } ${isRate ? 'p-[0.625rem]' : 'p-[0.875rem]'}`}
+        style={{ borderRadius: geometry.borderRadius }}
       >
-        <div className="mb-[0.375rem] flex items-center justify-between gap-[0.25rem]">
+        <div className={`${isRate ? 'mb-[0.1875rem]' : 'mb-[0.375rem]'} flex items-center justify-between gap-[0.25rem]`}>
           <div className="flex items-center gap-[0.375rem] flex-1 min-w-0">
-            {roleIcons[metric.role] ?? roleIcons.input}
-            <span className="text-[0.8125rem] text-foreground truncate" style={{ fontWeight: 600 }}>
+            {isNorthStar
+              ? <Sparkles className="size-[0.875rem] text-amber-500" />
+              : behaviorIcon}
+            <span className={`${isRate ? 'text-[0.75rem]' : 'text-[0.8125rem]'} text-foreground truncate`} style={{ fontWeight: 600 }}>
               {metric.name}
             </span>
           </div>
@@ -138,8 +147,8 @@ export function MetricCard({
           )}
         </div>
 
-        <div className="flex items-end gap-[0.5rem]">
-          <div className="text-[1.375rem] tracking-tight text-foreground" style={{ fontWeight: 700, lineHeight: 1.2 }}>
+        <div className={`flex items-end gap-[0.5rem] ${isStock ? 'mt-auto' : ''}`}>
+          <div className={`${isStock ? 'text-[2rem]' : isRate ? 'text-[1.125rem]' : 'text-[1.375rem]'} tracking-tight text-foreground`} style={{ fontWeight: 700, lineHeight: 1.2 }}>
             {fmt(metric.value, metric.unit)}
           </div>
           {hasDelta && impactActive && (
@@ -155,7 +164,7 @@ export function MetricCard({
           )}
         </div>
 
-        <div className="mt-[0.375rem] flex items-center justify-between">
+        <div className={`${isRate ? 'mt-[0.1875rem]' : 'mt-[0.375rem]'} flex items-center justify-between`}>
           <div className="flex items-center gap-[0.25rem]">
             <span
               className={`text-[0.5625rem] rounded-full px-[0.375rem] py-[0.0625rem] ${
@@ -165,7 +174,7 @@ export function MetricCard({
             >
               {isInput ? 'Input' : 'Derived'}
             </span>
-            <span className="text-[0.5625rem] rounded-full bg-secondary text-muted-foreground px-[0.375rem] py-[0.0625rem] capitalize">
+            <span className={`rounded-full bg-secondary text-muted-foreground px-[0.375rem] py-[0.0625rem] capitalize ${isRate ? 'text-[0.5rem]' : 'text-[0.5625rem]'}`}>
               {metric.behavior}
             </span>
             {metric.validationStatus !== 'valid' && (
@@ -179,11 +188,32 @@ export function MetricCard({
           <span className="text-[0.5625rem] text-muted-foreground">{metric.unit.symbol}</span>
         </div>
 
-        {metric.formula && (
+        {metric.formula && !isRate && (
           <div className="mt-[0.25rem] text-[0.5625rem] text-muted-foreground/60 font-mono truncate">
             ƒ = {metric.formula.source}
           </div>
         )}
+
+        <span
+          aria-hidden="true"
+          data-connection-target={metric.id}
+          className="absolute left-[-0.3125rem] top-1/2 size-[0.625rem] -translate-y-1/2 rounded-full border-2 border-card bg-muted-foreground/50 opacity-0 transition-opacity group-hover:opacity-100"
+        />
+        {onConnectionPointerDown ? (
+          <button
+            type="button"
+            aria-label={`Создать расчётную связь из метрики «${metric.name}»`}
+            title="Протянуть Calculation-связь"
+            data-connection-source={metric.id}
+            className="absolute right-[-0.4375rem] top-1/2 size-[0.875rem] -translate-y-1/2 rounded-full border-[0.1875rem] border-card bg-primary opacity-0 shadow-sm transition-all hover:scale-125 group-hover:opacity-100 focus:opacity-100 cursor-crosshair"
+            onPointerDown={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              onConnectionPointerDown(metric.id, event);
+            }}
+            onClick={(event) => event.stopPropagation()}
+          />
+        ) : null}
       </div>
     </div>
   );

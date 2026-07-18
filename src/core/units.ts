@@ -76,6 +76,10 @@ export function unitFromPreset(preset: string): UnitSpec {
   switch (preset) {
     case 'rub':
       return RUB;
+    case 'rub_per_rental':
+      return RUB_PER_RENTAL;
+    case 'rub_per_powerbank':
+      return RUB_PER_POWERBANK;
     case 'percent':
       return PERCENT;
     case 'rentals':
@@ -84,8 +88,18 @@ export function unitFromPreset(preset: string): UnitSpec {
       return RENTAL_PER_DAY;
     case 'powerbanks':
       return POWERBANK;
+    case 'slots':
+      return SLOT;
+    case 'cycles':
+      return CYCLE;
+    case 'cycles_per_rental':
+      return CYCLE_PER_RENTAL;
+    case 'cycles_per_powerbank':
+      return CYCLE_PER_POWERBANK;
     case 'months':
       return MONTH;
+    case 'days':
+      return DAY;
     default:
       return DIMENSIONLESS;
   }

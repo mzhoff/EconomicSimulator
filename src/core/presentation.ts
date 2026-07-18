@@ -35,10 +35,18 @@ export function autoLayout(model: ModelState): Record<string, { x: number; y: nu
 
   const positions: Record<string, { x: number; y: number }> = {};
   for (const [level, levelIds] of [...byLevel.entries()].sort(([left], [right]) => left - right)) {
+    let nextY = 70;
     levelIds
-      .sort((left, right) => model.metrics[left].domain.localeCompare(model.metrics[right].domain))
-      .forEach((id, index) => {
-        positions[id] = { x: 60 + level * 360, y: 70 + index * 132 };
+      .sort((left, right) => {
+        const leftDomain = model.metrics[left].domainIds[0] ?? '';
+        const rightDomain = model.metrics[right].domainIds[0] ?? '';
+        return leftDomain.localeCompare(rightDomain);
+      })
+      .forEach((id) => {
+        const behavior = model.metrics[id].behavior;
+        const height = behavior === 'stock' ? 272 : behavior === 'rate' ? 88 : 112;
+        positions[id] = { x: 60 + level * 360, y: nextY };
+        nextY += height + 40;
       });
   }
   return positions;

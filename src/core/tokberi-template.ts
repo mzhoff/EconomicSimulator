@@ -1,5 +1,6 @@
 import { add, compare, conditional, divide, literal, max, multiply, ref, subtract, sum } from './ast';
 import type {
+  DomainDef,
   FormulaSpec,
   Grain,
   InputConfig,
@@ -78,6 +79,7 @@ function metric(options: MetricOptions): MetricDef {
     id: options.id,
     definitionId: `tokberi.${options.id}`,
     name: options.name,
+    alias: options.id,
     description: options.description,
     behavior: options.behavior,
     unit: options.unit,
@@ -86,6 +88,7 @@ function metric(options: MetricOptions): MetricDef {
     knowledgeStatus: options.knowledgeStatus ?? (kind === 'derived' ? 'derived' : 'assumption'),
     kind,
     domain: options.domain,
+    domainIds: [options.domain],
     role: options.role,
     value: options.value ?? null,
     formula: options.formula,
@@ -95,6 +98,72 @@ function metric(options: MetricOptions): MetricDef {
     position: options.position,
     inputConfig: options.inputConfig,
   };
+}
+
+const legacyDomainDefinitions: Record<MetricDomain, Omit<DomainDef, 'metricIds'>> = {
+  demand: {
+    id: 'demand',
+    name: 'Спрос',
+    color: '#0ea5e9',
+    description: 'Спрос и использование продукта.',
+    order: 0,
+  },
+  revenue: {
+    id: 'revenue',
+    name: 'Выручка и тариф',
+    color: '#10b981',
+    description: 'Денежные поступления и параметры тарифа.',
+    order: 1,
+  },
+  variable_costs: {
+    id: 'variable_costs',
+    name: 'Переменные расходы',
+    color: '#f97316',
+    description: 'Расходы, зависящие от объёма операций.',
+    order: 2,
+  },
+  fixed_costs: {
+    id: 'fixed_costs',
+    name: 'Постоянные расходы',
+    color: '#f59e0b',
+    description: 'Регулярные расходы станции.',
+    order: 3,
+  },
+  capex: {
+    id: 'capex',
+    name: 'CAPEX',
+    color: '#8b5cf6',
+    description: 'Первоначальные инвестиции.',
+    order: 4,
+  },
+  operations: {
+    id: 'operations',
+    name: 'Операционные ограничения',
+    color: '#6366f1',
+    description: 'Физические и операционные параметры.',
+    order: 5,
+  },
+  results: {
+    id: 'results',
+    name: 'Результаты',
+    color: '#14b8a6',
+    description: 'Ключевые результаты модели.',
+    order: 6,
+  },
+};
+
+function domainsFromMetrics(metrics: Record<string, MetricDef>): Record<string, DomainDef> {
+  return Object.fromEntries(
+    Object.values(legacyDomainDefinitions).map((domain) => [
+      domain.id,
+      {
+        ...domain,
+        metricIds: Object.values(metrics)
+          .filter((metric) => metric.domainIds.includes(domain.id))
+          .map((metric) => metric.id),
+      },
+    ]),
+  );
 }
 
 function formula(source: string, ast: FormulaSpec['ast']): FormulaSpec {
@@ -793,6 +862,8 @@ export function createTokBeriModel(): ModelState {
     description: 'Детерминированная месячная модель одной станции. Франшиза, HQ и налоги исключены из Phase 1.',
     activeNorthStarId: 'profit_before_tax',
     metrics,
+    domains: domainsFromMetrics(metrics),
+    visualGroups: {},
     scenarios: {
       base: {
         id: 'base',

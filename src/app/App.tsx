@@ -1,25 +1,40 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
+} from 'react';
 import {
   AlertTriangle,
   CheckCircle2,
   Download,
+  Pencil,
   RotateCcw,
   Upload,
   Zap,
 } from 'lucide-react';
 import {
+  assertUniqueMetricAlias,
   autoLayout,
   computeGraphFocus,
   computeImpact,
   computeTokBeriThresholds,
+  formatFormulaAst,
   getCalculationRelations,
+  parseFormula,
   unitFromPreset,
+  type DomainDef,
   type Edge,
   type MetricDef,
   type ModelState,
   type Shock,
+  type VisualGroupDef,
+  type WorkspaceDocument,
 } from './components/metric-engine';
-import { evaluateModel } from '../core/evaluator';
+import { evaluateModel, topologicalOrder } from '../core/evaluator';
 import {
   backupBeforeImport,
   createWorkspaceDocument,
@@ -30,17 +45,45 @@ import {
 } from '../core/storage';
 import { MetricCard } from './components/metric-card';
 import { CanvasEdges } from './components/canvas-edges';
-import { InputPanel } from './components/input-panel';
+import { InputPanel, type DomainSummary } from './components/input-panel';
 import { InspectorPanel } from './components/inspector-panel';
 import { BottomToolbar } from './components/bottom-toolbar';
 import { InfiniteCanvas, useCanvasControls, type CanvasPoint } from './components/infinite-canvas';
-import { MetricCatalogDialog, type CustomMetricDraft } from './components/metric-catalog-dialog';
 import { GraphModeIndicator } from './components/graph-mode-indicator';
+import {
+  FormulaComposer,
+  type FormulaPreview,
+} from './components/formula-composer';
+import {
+  NodeEditor,
+  toMetricAlias,
+  type MetricNodeDraft,
+} from './components/node-editor';
+import { DomainManager } from './components/domain-manager';
+import { ModelSwitcher } from './components/model-switcher';
+import {
+  deleteEntry,
+  duplicateEntry,
+  loadModelLibrary,
+  saveModelLibrary,
+  switchActive,
+  upsertWorkspace,
+  type ModelLibraryState,
+} from './model-library';
+import { createBlankModel } from '../core/builder';
+import {
+  getMetricCardBounds,
+  getMetricCardSize,
+  getMetricPortPosition,
+} from './components/metric-geometry';
+import { VisualGroupFrame } from './components/visual-group-frame';
+import {
+  VisualGroupDialog,
+  type VisualGroupDraft,
+} from './components/visual-group-dialog';
 
-const MIN_CONTENT_WIDTH = 2700;
-const MIN_CONTENT_HEIGHT = 2250;
-const CARD_WIDTH = 272;
-const CARD_HEIGHT = 112;
+const MIN_CONTENT_WIDTH = 1200;
+const MIN_CONTENT_HEIGHT = 800;
 const HISTORY_LIMIT = 50;
 
 interface HistoryState {
@@ -62,42 +105,186 @@ interface DragState {
   moved: boolean;
 }
 
-interface ContextMenuState {
+interface MetricMenuState {
   id: string;
   x: number;
   y: number;
+}
+
+interface GroupMenuState {
+  id: string;
+  x: number;
+  y: number;
+}
+
+interface EditorState {
+  mode: 'create' | 'edit';
+  metricId?: string;
+  draft: MetricNodeDraft;
+}
+
+interface ConnectionDraft {
+  sourceId: string;
+  start: CanvasPoint;
+  end: CanvasPoint;
+}
+
+interface VisualGroupEditorState {
+  mode: 'create' | 'edit';
+  groupId?: string;
 }
 
 function pushPast(past: ModelState[], model: ModelState): ModelState[] {
   return [...past, model].slice(-HISTORY_LIMIT);
 }
 
+function createId(prefix: string): string {
+  const random = typeof globalThis.crypto?.randomUUID === 'function'
+    ? globalThis.crypto.randomUUID()
+    : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  return `${prefix}-${random}`;
+}
+
+function defaultMetricDraft(): MetricNodeDraft {
+  return {
+    name: '',
+    alias: '',
+    behavior: 'flow',
+    unitPreset: 'rub',
+    value: 0,
+    min: 0,
+    max: 100,
+    domainIds: [],
+    description: '',
+    valueMode: 'manual',
+    formulaSource: '',
+  };
+}
+
+function unitPresetFor(metric: MetricDef): string {
+  if (metric.unit.symbol === '₽') return 'rub';
+  if (metric.unit.symbol === '₽/аренду') return 'rub_per_rental';
+  if (metric.unit.symbol === '₽/батарею') return 'rub_per_powerbank';
+  if (metric.unit.symbol === '%') return 'percent';
+  if (metric.unit.symbol === 'аренд') return 'rentals';
+  if (metric.unit.symbol === 'аренд/день') return 'rentals_per_day';
+  if (metric.unit.symbol === 'шт.') return 'powerbanks';
+  if (metric.unit.symbol === 'слотов') return 'slots';
+  if (metric.unit.symbol === 'циклов') return 'cycles';
+  if (metric.unit.symbol === 'цикл/аренду') return 'cycles_per_rental';
+  if (metric.unit.symbol === 'циклов/батарею') return 'cycles_per_powerbank';
+  if (metric.unit.symbol === 'мес.') return 'months';
+  if (metric.unit.symbol === 'дн.') return 'days';
+  return 'ratio';
+}
+
+function toDisplayValue(value: number, unitPreset: string): number {
+  return unitPreset === 'percent' ? value * 100 : value;
+}
+
+function toStoredValue(value: number, unitPreset: string): number {
+  return unitPreset === 'percent' ? value / 100 : value;
+}
+
+function metricDraft(metric: MetricDef): MetricNodeDraft {
+  const unitPreset = unitPresetFor(metric);
+  const fallbackValue = metric.value ?? 0;
+  return {
+    name: metric.name,
+    alias: metric.alias,
+    behavior: metric.behavior,
+    unitPreset,
+    value: toDisplayValue(fallbackValue, unitPreset),
+    min: toDisplayValue(metric.inputConfig?.min ?? Math.min(0, fallbackValue), unitPreset),
+    max: toDisplayValue(metric.inputConfig?.max ?? Math.max(100, Math.abs(fallbackValue) * 3), unitPreset),
+    domainIds: metric.domainIds,
+    description: metric.description,
+    valueMode: metric.formula ? 'formula' : 'manual',
+    formulaSource: metric.formula?.source ?? '',
+  };
+}
+
+function syncDomainMemberships(
+  metrics: Record<string, MetricDef>,
+  domains: Record<string, DomainDef>,
+): Record<string, DomainDef> {
+  return Object.fromEntries(
+    Object.entries(domains).map(([id, domain]) => [
+      id,
+      {
+        ...domain,
+        metricIds: Object.values(metrics)
+          .filter((metric) => metric.domainIds.includes(id))
+          .map((metric) => metric.id),
+      },
+    ]),
+  );
+}
+
+function currentWorkspace(
+  model: ModelState,
+  scenarioId: string,
+  inputOverridesByScenario: Record<string, Record<string, number>>,
+  viewport: WorkspaceDocument['viewport'],
+): WorkspaceDocument {
+  return createWorkspaceDocument(model, {
+    activeScenarioId: scenarioId,
+    inputOverridesByScenario,
+    viewport,
+  });
+}
+
 export default function App() {
-  const [loaded] = useState(() => loadWorkspace());
-  const [history, setHistory] = useState<HistoryState>(() => ({
+  const [initial] = useState(() => {
+    const workspaceResult = loadWorkspace();
+    const libraryResult = loadModelLibrary(workspaceResult.value);
+    const workspace = libraryResult.value.entries[libraryResult.value.activeModelId]?.workspace
+      ?? workspaceResult.value;
+    return {
+      library: libraryResult.value,
+      workspace,
+      warning: libraryResult.warning ?? workspaceResult.warning ?? null,
+    };
+  });
+  const [library, setLibrary] = useState<ModelLibraryState>(initial.library);
+  const [history, setHistory] = useState<HistoryState>({
     past: [],
-    present: loaded.value.model,
+    present: initial.workspace.model,
     future: [],
-  }));
+  });
   const model = history.present;
-  const [scenarioId, setScenarioId] = useState(loaded.value.activeScenarioId);
-  const [inputOverridesByScenario, setInputOverridesByScenario] = useState(loaded.value.inputOverridesByScenario);
+  const [scenarioId, setScenarioId] = useState(initial.workspace.activeScenarioId);
+  const [inputOverridesByScenario, setInputOverridesByScenario] = useState(
+    initial.workspace.inputOverridesByScenario,
+  );
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
   const [impactActive, setImpactActive] = useState(false);
   const [shock, setShock] = useState<Shock>({ kind: 'relative', amount: 0.1 });
   const [leftOpen, setLeftOpen] = useState(true);
   const [rightOpen, setRightOpen] = useState(true);
-  const [catalogOpen, setCatalogOpen] = useState(false);
   const [selectionRect, setSelectionRect] = useState<SelectionRect | null>(null);
-  const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
-  const [notice, setNotice] = useState<string | null>(loaded.warning ?? null);
+  const [metricMenu, setMetricMenu] = useState<MetricMenuState | null>(null);
+  const [groupMenu, setGroupMenu] = useState<GroupMenuState | null>(null);
+  const [notice, setNotice] = useState<string | null>(initial.warning);
   const [saveState, setSaveState] = useState<'saved' | 'saving' | 'error'>('saved');
   const [hoveredEdge, setHoveredEdge] = useState<Edge | null>(null);
+  const [editor, setEditor] = useState<EditorState | null>(null);
+  const [formulaOpen, setFormulaOpen] = useState(false);
+  const [editorError, setEditorError] = useState<string | null>(null);
+  const [domainManagerOpen, setDomainManagerOpen] = useState(false);
+  const [domainManagerInitialId, setDomainManagerInitialId] = useState<string | null>(null);
+  const [connectionMode, setConnectionMode] = useState(false);
+  const [connectionDraft, setConnectionDraft] = useState<ConnectionDraft | null>(null);
+  const [visualGroupEditor, setVisualGroupEditor] = useState<VisualGroupEditorState | null>(null);
 
-  const { transform, setTransform, zoomIn, zoomOut, fitToView } = useCanvasControls(loaded.value.viewport);
+  const { transform, setTransform, zoomIn, zoomOut, fitToView } = useCanvasControls(
+    initial.workspace.viewport,
+  );
   const canvasAreaRef = useRef<HTMLDivElement>(null);
   const importInputRef = useRef<HTMLInputElement>(null);
   const dragRef = useRef<DragState | null>(null);
+  const libraryRef = useRef(initial.library);
   const selectionRef = useRef<{ start: CanvasPoint; base: Set<string>; moved: boolean } | null>(null);
   const didInitialFitRef = useRef(false);
 
@@ -128,9 +315,17 @@ export default function App() {
     [currentOverrides, model, scenarioId],
   );
   const calculationRelations = useMemo(() => getCalculationRelations(model), [model]);
+  const hiddenMetricIds = useMemo(() => {
+    const hidden = new Set<string>();
+    for (const group of Object.values(model.visualGroups)) {
+      if (group.collapsed) group.metricIds.forEach((id) => hidden.add(id));
+    }
+    return hidden;
+  }, [model.visualGroups]);
   const allEdges = useMemo(
-    () => [...calculationRelations, ...model.influenceRelations],
-    [calculationRelations, model.influenceRelations],
+    () => [...calculationRelations, ...model.influenceRelations]
+      .filter((edge) => !hiddenMetricIds.has(edge.from) && !hiddenMetricIds.has(edge.to)),
+    [calculationRelations, hiddenMetricIds, model.influenceRelations],
   );
   const graphFocus = useMemo(
     () => computeGraphFocus(model, selectedIds, impactActive && impact ? impact.inputId : undefined),
@@ -141,13 +336,33 @@ export default function App() {
   const primarySelectedId = selectedIds[selectedIds.length - 1] ?? model.activeNorthStarId;
   const allCollapsed = !leftOpen && !rightOpen;
   const overriddenIds = useMemo(() => new Set(Object.keys(currentOverrides)), [currentOverrides]);
+  const domains = useMemo<DomainSummary[]>(
+    () => Object.values(model.domains).map(({ id, name, color, order }) => ({ id, name, color, order })),
+    [model.domains],
+  );
+  const collapsedDomainIds = useMemo(
+    () => new Set(Object.values(model.domains).filter((domain) => domain.collapsed).map((domain) => domain.id)),
+    [model.domains],
+  );
   const contentSize = useMemo(() => {
-    const positions = Object.values(model.metrics).map((metric) => metric.position);
+    const bounds = Object.values(model.metrics).map((metric) => getMetricCardBounds(metric.position, metric.behavior));
     return {
-      width: Math.max(MIN_CONTENT_WIDTH, ...positions.map((position) => position.x + CARD_WIDTH + 120)),
-      height: Math.max(MIN_CONTENT_HEIGHT, ...positions.map((position) => position.y + CARD_HEIGHT + 120)),
+      width: Math.max(MIN_CONTENT_WIDTH, ...bounds.map((item) => item.right + 160)),
+      height: Math.max(MIN_CONTENT_HEIGHT, ...bounds.map((item) => item.bottom + 160)),
     };
   }, [model.metrics]);
+  const modelList = useMemo(
+    () => Object.values(library.entries).map(({ workspace }) => ({
+      id: workspace.model.id,
+      name: workspace.model.name,
+      metricCount: Object.keys(workspace.model.metrics).length,
+    })),
+    [library.entries],
+  );
+
+  useEffect(() => {
+    libraryRef.current = library;
+  }, [library]);
 
   const commitModel = useCallback((update: (current: ModelState) => ModelState) => {
     setHistory((current) => {
@@ -193,33 +408,39 @@ export default function App() {
   }, [contentSize.height, contentSize.width, fitToView]);
 
   useEffect(() => {
-    if (didInitialFitRef.current || loaded.value.viewport.scale !== 1 || loaded.value.viewport.x !== 0 || loaded.value.viewport.y !== 0) return;
+    if (
+      didInitialFitRef.current
+      || initial.workspace.viewport.scale !== 1
+      || initial.workspace.viewport.x !== 0
+      || initial.workspace.viewport.y !== 0
+    ) return;
     didInitialFitRef.current = true;
     const frame = window.requestAnimationFrame(handleFitToView);
     return () => window.cancelAnimationFrame(frame);
-  }, [handleFitToView, loaded.value.viewport.scale, loaded.value.viewport.x, loaded.value.viewport.y]);
+  }, [handleFitToView, initial.workspace.viewport]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      const workspace = createWorkspaceDocument(model, {
-        activeScenarioId: scenarioId,
+      const workspace = currentWorkspace(
+        model,
+        scenarioId,
         inputOverridesByScenario,
-        viewport: transform,
-      });
-      const saved = saveWorkspace(workspace);
-      setSaveState(saved.value ? 'saved' : 'error');
-      if (saved.warning) setNotice(saved.warning);
+        transform,
+      );
+      const legacySaved = saveWorkspace(workspace);
+      const next = upsertWorkspace(
+        { ...libraryRef.current, activeModelId: model.id },
+        workspace,
+      );
+      libraryRef.current = next;
+      const saved = saveModelLibrary(next);
+      setLibrary(next);
+      setSaveState(legacySaved.value && saved.value ? 'saved' : 'error');
+      if (legacySaved.warning ?? saved.warning) setNotice(legacySaved.warning ?? saved.warning ?? null);
     }, 350);
     setSaveState('saving');
     return () => window.clearTimeout(timer);
-  }, [
-    inputOverridesByScenario,
-    model,
-    scenarioId,
-    transform.scale,
-    transform.x,
-    transform.y,
-  ]);
+  }, [inputOverridesByScenario, model, scenarioId, transform]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -230,19 +451,27 @@ export default function App() {
         if (event.shiftKey) redo();
         else undo();
       }
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'g' && selectedIds.length >= 2) {
+        event.preventDefault();
+        setVisualGroupEditor({ mode: 'create' });
+      }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [redo, undo]);
+  }, [redo, selectedIds.length, undo]);
 
   useEffect(() => {
-    if (!contextMenu) return;
-    const close = () => setContextMenu(null);
+    if (!metricMenu && !groupMenu) return;
+    const close = () => {
+      setMetricMenu(null);
+      setGroupMenu(null);
+    };
     window.addEventListener('pointerdown', close);
     return () => window.removeEventListener('pointerdown', close);
-  }, [contextMenu]);
+  }, [groupMenu, metricMenu]);
 
   const selectMetric = useCallback((id: string, additive = false) => {
+    setSelectedGroupId(null);
     setSelectedIds((current) => {
       if (!additive) return [id];
       return current.includes(id) ? current.filter((item) => item !== id) : [...current, id];
@@ -252,7 +481,11 @@ export default function App() {
   const handleChangeInput = useCallback((id: string, rawValue: number) => {
     if (!Number.isFinite(rawValue)) return;
     const metric = model.metrics[id];
-    const value = metric?.inputConfig?.integer ? Math.round(rawValue) : rawValue;
+    if (!metric || metric.formula) return;
+    const rounded = metric.inputConfig?.integer ? Math.round(rawValue) : rawValue;
+    const value = metric.inputConfig
+      ? Math.min(metric.inputConfig.max, Math.max(metric.inputConfig.min, rounded))
+      : rounded;
     setInputOverridesByScenario((current) => ({
       ...current,
       [scenarioId]: {
@@ -284,11 +517,12 @@ export default function App() {
     }
   }, [allCollapsed]);
 
-  const handleStartDrag = useCallback((id: string, event: React.PointerEvent) => {
-    const ids = selectedSet.has(id) ? selectedIds : [id];
-    if (!selectedSet.has(id)) setSelectedIds([id]);
+  const startDrag = useCallback((
+    ids: string[],
+    event: ReactPointerEvent,
+  ) => {
     const originalPositions = Object.fromEntries(
-      ids.map((metricId) => [metricId, { ...model.metrics[metricId].position }]),
+      ids.filter((id) => model.metrics[id]).map((id) => [id, { ...model.metrics[id].position }]),
     );
     dragRef.current = {
       startX: event.clientX,
@@ -306,10 +540,10 @@ export default function App() {
       drag.moved = drag.moved || Math.abs(deltaX) > 0.5 || Math.abs(deltaY) > 0.5;
       setHistory((current) => {
         const metrics = { ...current.present.metrics };
-        for (const [metricId, origin] of Object.entries(drag.originalPositions)) {
-          if (!metrics[metricId]) continue;
-          metrics[metricId] = {
-            ...metrics[metricId],
+        for (const [id, origin] of Object.entries(drag.originalPositions)) {
+          if (!metrics[id]) continue;
+          metrics[id] = {
+            ...metrics[id],
             position: { x: origin.x + deltaX, y: origin.y + deltaY },
           };
         }
@@ -332,13 +566,21 @@ export default function App() {
     };
     window.addEventListener('pointermove', handleMove);
     window.addEventListener('pointerup', handleUp);
-  }, [model, selectedIds, selectedSet, transform.scale]);
+  }, [model, transform.scale]);
+
+  const handleStartDrag = useCallback((id: string, event: ReactPointerEvent) => {
+    const ids = selectedSet.has(id) ? selectedIds : [id];
+    if (!selectedSet.has(id)) setSelectedIds([id]);
+    startDrag(ids, event);
+  }, [selectedIds, selectedSet, startDrag]);
+
+  const handleStartGroupDrag = useCallback((id: string, event: ReactPointerEvent) => {
+    const group = model.visualGroups[id];
+    if (!group) return;
+    startDrag(group.metricIds, event);
+  }, [model.visualGroups, startDrag]);
 
   const handleDeleteMetric = useCallback((id: string) => {
-    if (id === model.activeNorthStarId) {
-      setNotice('Сначала выберите другую North Star, затем удаляйте метрику.');
-      return;
-    }
     const dependents = calculationRelations.filter((relation) => relation.from === id);
     if (dependents.length > 0) {
       setNotice(`Нельзя удалить «${model.metrics[id]?.name}»: от неё зависят расчётные формулы.`);
@@ -355,72 +597,238 @@ export default function App() {
           return [scenarioKey, { ...scenario, overrides }];
         }),
       );
+      const visualGroups = Object.fromEntries(
+        Object.entries(current.visualGroups)
+          .map(([groupId, group]) => [
+            groupId,
+            { ...group, metricIds: group.metricIds.filter((metricId) => metricId !== id) },
+          ])
+          .filter(([, group]) => (group as VisualGroupDef).metricIds.length > 0),
+      );
       return {
         ...current,
+        activeNorthStarId: current.activeNorthStarId === id ? null : current.activeNorthStarId,
         metrics,
+        domains: syncDomainMemberships(metrics, current.domains),
         scenarios,
-        influenceRelations: current.influenceRelations.filter((relation) => relation.from !== id && relation.to !== id),
+        visualGroups,
+        influenceRelations: current.influenceRelations.filter(
+          (relation) => relation.from !== id && relation.to !== id,
+        ),
       };
     });
     setSelectedIds((current) => current.filter((metricId) => metricId !== id));
-    setContextMenu(null);
-  }, [calculationRelations, commitModel, model.activeNorthStarId, model.metrics]);
+    setMetricMenu(null);
+  }, [calculationRelations, commitModel, model.metrics]);
 
-  const handleAddCustom = useCallback((draft: CustomMetricDraft) => {
-    const baseId = draft.name.toLowerCase().replace(/[^a-zа-я0-9]+/gi, '_').replace(/^_|_$/g, '') || 'custom_metric';
-    let id = baseId;
-    let suffix = 2;
-    while (model.metrics[id]) {
-      id = `${baseId}_${suffix}`;
-      suffix += 1;
-    }
-    const positions = Object.values(model.metrics).map((metric) => metric.position);
-    const maxX = Math.max(...positions.map((position) => position.x), 0);
-    const unit = unitFromPreset(draft.unitPreset);
-    const customMetric: MetricDef = {
-      id,
-      definitionId: `custom.${id}`,
-      name: draft.name,
-      description: draft.description || 'Пользовательская метрика.',
-      behavior: draft.behavior,
-      unit,
-      grain: draft.behavior === 'event'
-        ? { entity: 'event', time: 'timestamp' }
-        : { entity: 'station', time: 'month' },
-      valueSource: draft.behavior === 'event' ? 'observed' : 'input',
-      knowledgeStatus: draft.behavior === 'event' ? 'fact' : 'assumption',
-      kind: draft.behavior === 'event' ? 'observed' : 'assumption',
-      domain: draft.domain,
-      role: draft.role,
-      value: draft.behavior === 'event' ? null : draft.value,
-      provenance: {
-        source: 'Создано пользователем в EconomicSimulator',
-        version: new Date().toISOString().slice(0, 10),
-        confidence: 'medium',
+  const openCreateEditor = useCallback(() => {
+    setEditor({ mode: 'create', draft: defaultMetricDraft() });
+    setFormulaOpen(false);
+    setEditorError(null);
+  }, []);
+
+  const openEditEditor = useCallback((id: string, openFormula = false) => {
+    const metric = model.metrics[id];
+    if (!metric) return;
+    setEditor({
+      mode: 'edit',
+      metricId: id,
+      draft: {
+        ...metricDraft(metric),
+        formulaSource: metric.formula
+          ? formatFormulaAst(metric.formula.ast, model.metrics)
+          : '',
       },
-      validationStatus: 'valid',
-      validationMessages: [],
-      position: { x: maxX + 360, y: 100 },
-      inputConfig: draft.behavior === 'event'
-        ? undefined
-        : { min: Math.min(0, draft.value), max: Math.max(Math.abs(draft.value) * 3, 100), step: Math.max(Math.abs(draft.value) / 100, 0.01) },
-    };
-    commitModel((current) => ({
-      ...current,
-      metrics: { ...current.metrics, [id]: customMetric },
-    }));
-    setSelectedIds([id]);
-  }, [commitModel, model.metrics]);
+    });
+    setFormulaOpen(openFormula);
+    setEditorError(null);
+    setMetricMenu(null);
+  }, [model.metrics]);
+
+  const editorAliasError = useMemo(() => {
+    if (!editor?.draft.alias) return undefined;
+    const duplicate = Object.values(model.metrics).find(
+      (metric) => metric.alias === editor.draft.alias && metric.id !== editor.metricId,
+    );
+    return duplicate ? `Alias уже используется метрикой «${duplicate.name}».` : undefined;
+  }, [editor, model.metrics]);
+
+  const formulaPreview = useMemo<FormulaPreview>(() => {
+    if (!editor || editor.draft.valueMode !== 'formula' || !editor.draft.formulaSource.trim()) {
+      return { errors: [] };
+    }
+    try {
+      const formula = parseFormula(editor.draft.formulaSource, model.metrics);
+      const id = editor.metricId ?? '__formula_preview__';
+      const unit = unitFromPreset(editor.draft.unitPreset);
+      const existing = editor.metricId ? model.metrics[editor.metricId] : undefined;
+      const previewMetric: MetricDef = {
+        ...(existing ?? {
+          id,
+          definitionId: `custom.${id}`,
+          name: editor.draft.name || 'Новая метрика',
+          alias: editor.draft.alias || 'formula_preview',
+          description: '',
+          behavior: editor.draft.behavior,
+          unit,
+          grain: { entity: 'station', time: 'month' },
+          valueSource: 'derived',
+          knowledgeStatus: 'derived',
+          kind: 'derived',
+          domain: 'results',
+          domainIds: [],
+          role: 'intermediate',
+          value: null,
+          provenance: {
+            source: 'EconomicSimulator',
+            version: new Date().toISOString().slice(0, 10),
+            confidence: 'medium',
+          },
+          validationStatus: 'valid',
+          validationMessages: [],
+          position: { x: 0, y: 0 },
+        }),
+        id,
+        name: editor.draft.name || existing?.name || 'Новая метрика',
+        alias: editor.draft.alias || existing?.alias || 'formula_preview',
+        behavior: editor.draft.behavior,
+        unit,
+        value: null,
+        formula,
+        kind: 'derived',
+        valueSource: 'derived',
+        knowledgeStatus: 'derived',
+      };
+      const candidate: ModelState = {
+        ...model,
+        metrics: { ...model.metrics, [id]: previewMetric },
+      };
+      topologicalOrder(candidate);
+      const result = evaluateModel(candidate, scenarioId, currentOverrides);
+      const errors = result.errors
+        .filter((error) => error.metricId === id)
+        .map((error) => error.message);
+      return {
+        value: result.metrics[id]?.value,
+        unitSymbol: unit.symbol,
+        behavior: editor.draft.behavior,
+        dependencies: getCalculationRelations(candidate)
+          .filter((relation) => relation.to === id)
+          .map((relation) => relation.from),
+        errors,
+      };
+    } catch (error) {
+      return { errors: [error instanceof Error ? error.message : 'Формула невалидна.'] };
+    }
+  }, [currentOverrides, editor, model, scenarioId]);
+
+  const handleSaveMetric = useCallback(() => {
+    if (!editor) return;
+    const draft = editor.draft;
+    try {
+      assertUniqueMetricAlias(draft.alias, model.metrics, editor.metricId);
+      if (draft.valueMode === 'formula' && formulaPreview.errors.length > 0) {
+        throw new Error(formulaPreview.errors[0]);
+      }
+      const id = editor.metricId ?? createId('metric');
+      const existing = editor.metricId ? model.metrics[editor.metricId] : undefined;
+      const unit = unitFromPreset(draft.unitPreset);
+      const value = toStoredValue(draft.value, draft.unitPreset);
+      const min = toStoredValue(draft.min, draft.unitPreset);
+      const max = toStoredValue(draft.max, draft.unitPreset);
+      const formula = draft.valueMode === 'formula'
+        ? parseFormula(draft.formulaSource, model.metrics)
+        : undefined;
+      const area = canvasAreaRef.current?.getBoundingClientRect();
+      const cardSize = getMetricCardSize(draft.behavior);
+      const existingMetrics = Object.values(model.metrics);
+      const position = existing?.position ?? (existingMetrics.length > 0
+        ? {
+            x: Math.max(
+              ...existingMetrics.map((current) => (
+                getMetricCardBounds(current.position, current.behavior).right
+              )),
+            ) + 120,
+            y: Math.min(...existingMetrics.map((current) => current.position.y)),
+          }
+        : {
+            x: Math.max(40, ((area?.width ?? 1200) / 2 - transform.x) / transform.scale - cardSize.width / 2),
+            y: Math.max(40, ((area?.height ?? 800) / 2 - transform.y) / transform.scale - cardSize.height / 2),
+          });
+      const metric: MetricDef = {
+        ...(existing ?? {
+          id,
+          definitionId: `custom.${id}`,
+          grain: { entity: 'station', time: 'month' },
+          domain: 'results',
+          role: 'input',
+          provenance: {
+            source: 'Создано пользователем в EconomicSimulator',
+            version: new Date().toISOString().slice(0, 10),
+            confidence: 'medium',
+          },
+        }),
+        id,
+        name: draft.name.trim(),
+        alias: draft.alias.trim(),
+        description: draft.description.trim() || 'Пользовательская метрика.',
+        behavior: draft.behavior,
+        unit,
+        valueSource: formula ? 'derived' : 'input',
+        knowledgeStatus: formula ? 'derived' : 'assumption',
+        kind: formula ? 'derived' : 'assumption',
+        domain: existing?.domain ?? 'results',
+        domainIds: [...new Set(draft.domainIds)],
+        role: formula ? 'intermediate' : 'input',
+        value: formula ? null : value,
+        formula,
+        validationStatus: 'valid',
+        validationMessages: [],
+        position,
+        inputConfig: formula
+          ? undefined
+          : {
+              min,
+              max,
+              step: Math.max((max - min) / 100, draft.unitPreset === 'percent' ? 0.001 : 0.01),
+            },
+      };
+      const metrics = { ...model.metrics, [id]: metric };
+      for (const current of Object.values(metrics)) {
+        if (!current.formula) continue;
+        metrics[current.id] = {
+          ...current,
+          formula: {
+            ...current.formula,
+            source: formatFormulaAst(current.formula.ast, metrics),
+          },
+        };
+      }
+      const candidate: ModelState = {
+        ...model,
+        metrics,
+        domains: syncDomainMemberships(metrics, model.domains),
+      };
+      topologicalOrder(candidate);
+      const checked = evaluateModel(candidate, scenarioId, currentOverrides);
+      const blocking = checked.errors.find((error) => error.metricId === id);
+      if (blocking) throw new Error(blocking.message);
+      commitModel(() => candidate);
+      setSelectedIds([id]);
+      setEditor(null);
+      setFormulaOpen(false);
+      setEditorError(null);
+    } catch (error) {
+      setEditorError(error instanceof Error ? error.message : 'Метрика не сохранена.');
+    }
+  }, [commitModel, currentOverrides, editor, formulaPreview.errors, model, scenarioId, transform]);
 
   const handleSetNorthStar = useCallback((id: string) => {
-    commitModel((current) => {
-      if (!current.metrics[id] || current.activeNorthStarId === id) return current;
-      const metrics = { ...current.metrics };
-      const previous = metrics[current.activeNorthStarId];
-      if (previous) metrics[previous.id] = { ...previous, role: 'output' };
-      metrics[id] = { ...metrics[id], role: 'north_star' };
-      return { ...current, metrics, activeNorthStarId: id };
-    });
+    commitModel((current) => (
+      current.metrics[id] && current.activeNorthStarId !== id
+        ? { ...current, activeNorthStarId: id }
+        : current
+    ));
     setSelectedIds([id]);
   }, [commitModel]);
 
@@ -438,12 +846,14 @@ export default function App() {
     window.setTimeout(handleFitToView, 60);
   }, [commitModel, handleFitToView]);
 
-  const handleSelectionStart = useCallback((point: CanvasPoint, event: React.PointerEvent<HTMLDivElement>) => {
+  const handleSelectionStart = useCallback((point: CanvasPoint, event: ReactPointerEvent<HTMLDivElement>) => {
     const base = event.shiftKey ? new Set(selectedIds) : new Set<string>();
     selectionRef.current = { start: point, base, moved: false };
     setSelectionRect({ start: point, end: point });
     if (!event.shiftKey) setSelectedIds([]);
-    setContextMenu(null);
+    setSelectedGroupId(null);
+    setMetricMenu(null);
+    setGroupMenu(null);
   }, [selectedIds]);
 
   const handleSelectionMove = useCallback((point: CanvasPoint) => {
@@ -457,10 +867,8 @@ export default function App() {
     const selected = new Set(state.base);
     if (state.moved) {
       for (const metric of Object.values(model.metrics)) {
-        const intersects = metric.position.x < right
-          && metric.position.x + CARD_WIDTH > left
-          && metric.position.y < bottom
-          && metric.position.y + CARD_HEIGHT > top;
+        const bounds = getMetricCardBounds(metric.position, metric.behavior);
+        const intersects = bounds.x < right && bounds.right > left && bounds.y < bottom && bounds.bottom > top;
         if (intersects) selected.add(metric.id);
       }
     }
@@ -473,23 +881,92 @@ export default function App() {
     setSelectionRect(null);
   }, []);
 
+  const worldPointFromClient = useCallback((clientX: number, clientY: number): CanvasPoint => {
+    const rect = canvasAreaRef.current?.getBoundingClientRect();
+    return {
+      x: (clientX - (rect?.left ?? 0) - transform.x) / transform.scale,
+      y: (clientY - (rect?.top ?? 0) - transform.y) / transform.scale,
+    };
+  }, [transform]);
+
+  const handleConnectionPointerDown = useCallback((
+    sourceId: string,
+    event: ReactPointerEvent<HTMLButtonElement>,
+  ) => {
+    const source = model.metrics[sourceId];
+    if (!source) return;
+    const start = getMetricPortPosition(source.position, source.behavior, 'output');
+    setConnectionDraft({ sourceId, start, end: worldPointFromClient(event.clientX, event.clientY) });
+
+    const handleMove = (moveEvent: PointerEvent) => {
+      const end = worldPointFromClient(moveEvent.clientX, moveEvent.clientY);
+      setConnectionDraft((current) => current ? { ...current, end } : null);
+    };
+    const handleUp = (upEvent: PointerEvent) => {
+      const targetElement = document
+        .elementFromPoint(upEvent.clientX, upEvent.clientY)
+        ?.closest<HTMLElement>('[data-metric-id]');
+      const targetId = targetElement?.dataset.metricId;
+      if (targetId && targetId !== sourceId) {
+        const target = model.metrics[targetId];
+        const alias = source.alias;
+        const currentSource = target.formula
+          ? formatFormulaAst(target.formula.ast, model.metrics)
+          : '';
+        const nextSource = currentSource.includes(alias)
+          ? currentSource
+          : currentSource
+            ? `${currentSource} + ${alias}`
+            : alias;
+        setEditor({
+          mode: 'edit',
+          metricId: targetId,
+          draft: {
+            ...metricDraft(target),
+            valueMode: 'formula',
+            formulaSource: nextSource,
+          },
+        });
+        setFormulaOpen(true);
+        setEditorError(null);
+        setSelectedIds([targetId]);
+      } else if (targetId === sourceId) {
+        setNotice('Метрика не может ссылаться сама на себя: это создало бы цикл.');
+      }
+      setConnectionDraft(null);
+      window.removeEventListener('pointermove', handleMove);
+      window.removeEventListener('pointerup', handleUp);
+    };
+    window.addEventListener('pointermove', handleMove);
+    window.addEventListener('pointerup', handleUp);
+  }, [model.metrics, worldPointFromClient]);
+
   const handleExport = useCallback(() => {
-    const workspace = createWorkspaceDocument(model, {
-      activeScenarioId: scenarioId,
-      inputOverridesByScenario,
-      viewport: transform,
-    });
+    const workspace = currentWorkspace(model, scenarioId, inputOverridesByScenario, transform);
     const blob = new Blob([serializeWorkspace(workspace)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement('a');
     anchor.href = url;
-    anchor.download = `tokberi-economic-model-${new Date().toISOString().slice(0, 10)}.json`;
+    anchor.download = `${model.name.toLowerCase().replace(/[^a-zа-я0-9]+/gi, '-') || 'economic-model'}-${new Date().toISOString().slice(0, 10)}.json`;
     document.body.appendChild(anchor);
     anchor.click();
     anchor.remove();
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-    setNotice('JSON export создан. В нём сохранены формулы, сценарии, позиции и viewport.');
+    setNotice('JSON export создан: формулы, домены, группы, сценарии, позиции и viewport сохранены.');
   }, [inputOverridesByScenario, model, scenarioId, transform]);
+
+  const loadWorkspaceIntoUi = useCallback((workspace: WorkspaceDocument) => {
+    setHistory({ past: [], present: workspace.model, future: [] });
+    setScenarioId(workspace.activeScenarioId);
+    setInputOverridesByScenario(workspace.inputOverridesByScenario);
+    setTransform(workspace.viewport);
+    setSelectedIds([]);
+    setSelectedGroupId(null);
+    setImpactActive(false);
+    setHoveredEdge(null);
+    setEditor(null);
+    setFormulaOpen(false);
+  }, [setTransform]);
 
   const handleImportFile = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -502,15 +979,253 @@ export default function App() {
     }
     backupBeforeImport();
     const workspace = imported.workspace;
-    setHistory({ past: [], present: workspace.model, future: [] });
-    setScenarioId(workspace.activeScenarioId);
-    setInputOverridesByScenario(workspace.inputOverridesByScenario);
-    setTransform(workspace.viewport);
-    setSelectedIds([]);
-    setImpactActive(false);
-    setHoveredEdge(null);
-    setNotice('Модель импортирована и прошла проверку схемы, единиц и DAG.');
-  }, [setTransform]);
+    const nextLibrary = upsertWorkspace(
+      { ...library, activeModelId: workspace.model.id },
+      workspace,
+    );
+    setLibrary(nextLibrary);
+    saveModelLibrary(nextLibrary);
+    loadWorkspaceIntoUi(workspace);
+    setNotice('Модель импортирована и прошла проверку схемы, формул, единиц и DAG.');
+  }, [library, loadWorkspaceIntoUi]);
+
+  const handleSwitchModel = useCallback((id: string) => {
+    const withCurrent = upsertWorkspace(
+      library,
+      currentWorkspace(model, scenarioId, inputOverridesByScenario, transform),
+    );
+    const next = switchActive(withCurrent, id);
+    setLibrary(next);
+    saveModelLibrary(next);
+    loadWorkspaceIntoUi(next.entries[id].workspace);
+  }, [inputOverridesByScenario, library, loadWorkspaceIntoUi, model, scenarioId, transform]);
+
+  const handleCreateBlankModel = useCallback(() => {
+    const blank = createBlankModel(`Новая модель ${modelList.length + 1}`);
+    const workspace = createWorkspaceDocument(blank, {
+      viewport: { x: 120, y: 80, scale: 1 },
+    });
+    const withCurrent = upsertWorkspace(
+      library,
+      currentWorkspace(model, scenarioId, inputOverridesByScenario, transform),
+    );
+    const next = upsertWorkspace(
+      { ...withCurrent, activeModelId: blank.id },
+      workspace,
+    );
+    setLibrary(next);
+    saveModelLibrary(next);
+    loadWorkspaceIntoUi(workspace);
+    setNotice('Создана пустая модель. Начните с кнопки «+» в нижней панели.');
+  }, [inputOverridesByScenario, library, loadWorkspaceIntoUi, model, modelList.length, scenarioId, transform]);
+
+  const handleDuplicateModel = useCallback((id: string) => {
+    const source = library.entries[id]?.workspace.model;
+    if (!source) return;
+    const generated = createBlankModel();
+    const withCurrent = upsertWorkspace(
+      library,
+      currentWorkspace(model, scenarioId, inputOverridesByScenario, transform),
+    );
+    const next = duplicateEntry(withCurrent, id, generated.id, `${source.name} — копия`);
+    setLibrary(next);
+    saveModelLibrary(next);
+    loadWorkspaceIntoUi(next.entries[generated.id].workspace);
+  }, [inputOverridesByScenario, library, loadWorkspaceIntoUi, model, scenarioId, transform]);
+
+  const handleRenameModel = useCallback((id: string, name: string) => {
+    const entry = library.entries[id];
+    if (!entry) return;
+    const workspace = structuredClone(entry.workspace);
+    workspace.model.name = name;
+    const next = upsertWorkspace(library, workspace);
+    setLibrary(next);
+    if (id === model.id) {
+      commitModel((current) => ({ ...current, name }));
+    } else {
+      saveModelLibrary(next);
+    }
+  }, [commitModel, library, model.id]);
+
+  const handleDeleteModel = useCallback((id: string) => {
+    const entry = library.entries[id];
+    if (!entry) return;
+    if (!window.confirm(`Удалить модель «${entry.workspace.model.name}» из локальной библиотеки?`)) return;
+    try {
+      const next = deleteEntry(library, id);
+      setLibrary(next);
+      saveModelLibrary(next);
+      if (id === model.id) loadWorkspaceIntoUi(next.entries[next.activeModelId].workspace);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : 'Модель не удалена.');
+    }
+  }, [library, loadWorkspaceIntoUi, model.id]);
+
+  const handleCreateDomain = useCallback((name: string, color: string) => {
+    const id = createId('domain');
+    commitModel((current) => ({
+      ...current,
+      domains: {
+        ...current.domains,
+        [id]: {
+          id,
+          name,
+          color,
+          description: '',
+          metricIds: [],
+          order: Object.keys(current.domains).length,
+          collapsed: false,
+        },
+      },
+    }));
+  }, [commitModel]);
+
+  const handleRenameDomain = useCallback((id: string, name: string) => {
+    commitModel((current) => current.domains[id]
+      ? {
+          ...current,
+          domains: {
+            ...current.domains,
+            [id]: { ...current.domains[id], name },
+          },
+        }
+      : current);
+  }, [commitModel]);
+
+  const handleDeleteDomain = useCallback((id: string) => {
+    commitModel((current) => {
+      if (!current.domains[id]) return current;
+      const domains = { ...current.domains };
+      delete domains[id];
+      const metrics = Object.fromEntries(
+        Object.entries(current.metrics).map(([metricId, metric]) => {
+          const domainIds = metric.domainIds.filter((domainId) => domainId !== id);
+          return [
+            metricId,
+            {
+              ...metric,
+              domainIds,
+            },
+          ];
+        }),
+      );
+      return { ...current, metrics, domains: syncDomainMemberships(metrics, domains) };
+    });
+  }, [commitModel]);
+
+  const updateDomainMembership = useCallback((
+    domainId: string,
+    ids: readonly string[],
+    assigned: boolean,
+  ) => {
+    commitModel((current) => {
+      if (!current.domains[domainId]) return current;
+      const idSet = new Set(ids);
+      const metrics = Object.fromEntries(
+        Object.entries(current.metrics).map(([id, metric]) => {
+          if (!idSet.has(id)) return [id, metric];
+          const memberships = new Set(metric.domainIds);
+          if (assigned) memberships.add(domainId);
+          else memberships.delete(domainId);
+          const domainIds = [...memberships];
+          return [
+            id,
+            {
+              ...metric,
+              domainIds,
+            },
+          ];
+        }),
+      );
+      return { ...current, metrics, domains: syncDomainMemberships(metrics, current.domains) };
+    });
+  }, [commitModel]);
+
+  const handleToggleDomain = useCallback((id: string) => {
+    if (id === '__unassigned__') return;
+    commitModel((current) => current.domains[id]
+      ? {
+          ...current,
+          domains: {
+            ...current.domains,
+            [id]: {
+              ...current.domains[id],
+              collapsed: !current.domains[id].collapsed,
+            },
+          },
+        }
+      : current);
+  }, [commitModel]);
+
+  const handleOpenDomainManager = useCallback((id?: string) => {
+    setDomainManagerInitialId(id ?? null);
+    setDomainManagerOpen(true);
+  }, []);
+
+  const metricAlreadyGrouped = useMemo(() => {
+    const ids = new Set<string>();
+    Object.values(model.visualGroups).forEach((group) => group.metricIds.forEach((id) => ids.add(id)));
+    return ids;
+  }, [model.visualGroups]);
+
+  const canGroupSelection = selectedIds.length >= 2
+    && selectedIds.every((id) => !metricAlreadyGrouped.has(id));
+
+  const handleOpenGroupDialog = useCallback(() => {
+    if (selectedIds.length < 2) return;
+    const occupied = selectedIds.filter((id) => metricAlreadyGrouped.has(id));
+    if (occupied.length > 0) {
+      setNotice('Одна метрика может находиться только в одной визуальной группе. Смысловые домены при этом остаются many-to-many.');
+      return;
+    }
+    setVisualGroupEditor({ mode: 'create' });
+  }, [metricAlreadyGrouped, selectedIds]);
+
+  const handleSaveVisualGroup = useCallback((draft: VisualGroupDraft) => {
+    if (!visualGroupEditor) return;
+    if (visualGroupEditor.mode === 'edit' && visualGroupEditor.groupId) {
+      commitModel((current) => ({
+        ...current,
+        visualGroups: {
+          ...current.visualGroups,
+          [visualGroupEditor.groupId!]: {
+            ...current.visualGroups[visualGroupEditor.groupId!],
+            name: draft.name,
+            color: draft.color,
+          },
+        },
+      }));
+    } else {
+      const id = createId('group');
+      commitModel((current) => ({
+        ...current,
+        visualGroups: {
+          ...current.visualGroups,
+          [id]: {
+            id,
+            name: draft.name,
+            color: draft.color,
+            metricIds: [...selectedIds],
+            collapsed: false,
+          },
+        },
+      }));
+      setSelectedGroupId(id);
+    }
+    setVisualGroupEditor(null);
+    setGroupMenu(null);
+  }, [commitModel, selectedIds, visualGroupEditor]);
+
+  const handleDeleteVisualGroup = useCallback((id: string) => {
+    commitModel((current) => {
+      if (!current.visualGroups[id]) return current;
+      const visualGroups = { ...current.visualGroups };
+      delete visualGroups[id];
+      return { ...current, visualGroups };
+    });
+    setSelectedGroupId(null);
+    setGroupMenu(null);
+  }, [commitModel]);
 
   const selectionStyle = selectionRect
     ? {
@@ -520,31 +1235,41 @@ export default function App() {
         height: Math.abs(selectionRect.end.y - selectionRect.start.y),
       }
     : null;
-
-  const scenarioOrder = ['weak', 'base', 'good', 'hotspot'].filter((id) => model.scenarios[id]);
+  const scenarioOrder = Object.keys(model.scenarios);
+  const groupBeingEdited = visualGroupEditor?.groupId
+    ? model.visualGroups[visualGroupEditor.groupId]
+    : undefined;
 
   return (
-    <div className="flex flex-col h-screen overflow-hidden" style={{ fontFamily: "'Geist', system-ui, sans-serif" }}>
-      <header className="relative z-40 flex items-center justify-between gap-[0.75rem] border-b border-border bg-card px-[1.25rem] py-[0.5rem]" style={{ minHeight: '3.25rem' }}>
-        <div className="flex items-center gap-[0.75rem] min-w-0">
-          <div className="flex items-center gap-[0.375rem] shrink-0">
+    <div className="flex h-screen flex-col overflow-hidden" style={{ fontFamily: "'Geist', system-ui, sans-serif" }}>
+      <header className="relative z-40 flex min-h-[3.25rem] items-center justify-between gap-[0.75rem] border-b border-border bg-card px-[1.25rem] py-[0.5rem]">
+        <div className="flex min-w-0 items-center gap-[0.75rem]">
+          <div className="flex shrink-0 items-center gap-[0.375rem]">
             <Zap className="size-[1rem] text-foreground" />
             <span className="text-[0.875rem] text-foreground" style={{ fontWeight: 600 }}>Metric Graph OS</span>
           </div>
-          <span className="text-[0.6875rem] text-muted-foreground truncate hidden lg:block">TokBeri · экономика станции</span>
-          <span className="text-[0.5625rem] bg-secondary text-muted-foreground rounded-full px-[0.5rem] py-[0.0625rem] hidden xl:block" style={{ fontWeight: 500 }}>
+          <ModelSwitcher
+            models={modelList}
+            activeModelId={model.id}
+            onSelect={handleSwitchModel}
+            onCreateBlank={handleCreateBlankModel}
+            onDuplicate={handleDuplicateModel}
+            onRename={handleRenameModel}
+            onDelete={handleDeleteModel}
+          />
+          <span className="hidden rounded-full bg-secondary px-[0.5rem] py-[0.0625rem] text-[0.5625rem] text-muted-foreground xl:block" style={{ fontWeight: 500 }}>
             {Object.keys(model.metrics).length} metrics · {calculationRelations.length} calc edges
           </span>
         </div>
 
-        <div className="flex items-center gap-[0.375rem] shrink-0">
+        <div className="flex shrink-0 items-center gap-[0.375rem]">
           <div className="flex items-center rounded-[var(--radius-lg)] border border-border bg-background p-[0.125rem]">
             {scenarioOrder.map((id) => (
               <button
                 key={id}
                 onClick={() => setScenarioId(id)}
                 title={model.scenarios[id].description}
-                className={`rounded-[var(--radius-md)] px-[0.625rem] py-[0.25rem] text-[0.6875rem] transition-all cursor-pointer ${
+                className={`cursor-pointer rounded-[var(--radius-md)] px-[0.625rem] py-[0.25rem] text-[0.6875rem] transition-all ${
                   scenarioId === id ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'
                 }`}
                 style={{ fontWeight: 500 }}
@@ -553,23 +1278,18 @@ export default function App() {
               </button>
             ))}
           </div>
-
           <button
             onClick={handleResetScenario}
             title="Сбросить ручные изменения текущего сценария"
-            className="flex items-center justify-center size-[1.875rem] rounded-[var(--radius-lg)] border border-border text-muted-foreground hover:text-foreground cursor-pointer"
+            className="flex size-[1.875rem] cursor-pointer items-center justify-center rounded-[var(--radius-lg)] border border-border text-muted-foreground hover:text-foreground"
           >
             <RotateCcw className="size-[0.75rem]" />
           </button>
-          <button
-            onClick={() => importInputRef.current?.click()}
-            className="header-action"
-            title="Импортировать проверенный JSON"
-          >
+          <button onClick={() => importInputRef.current?.click()} className="header-action" title="Импортировать JSON">
             <Upload className="size-[0.75rem]" />
             <span className="hidden xl:inline">Import</span>
           </button>
-          <button onClick={handleExport} className="header-action" title="Экспортировать переносимый JSON">
+          <button onClick={handleExport} className="header-action" title="Экспортировать JSON">
             <Download className="size-[0.75rem]" />
             <span className="hidden xl:inline">Export</span>
           </button>
@@ -591,6 +1311,33 @@ export default function App() {
           onBackgroundPointerMove={handleSelectionMove}
           onBackgroundPointerUp={handleSelectionEnd}
         >
+          {Object.values(model.visualGroups).map((group) => (
+            <VisualGroupFrame
+              key={group.id}
+              group={group}
+              metrics={evaluation.metrics}
+              selected={selectedGroupId === group.id}
+              onSelect={(id) => {
+                setSelectedGroupId(id);
+                setSelectedIds([]);
+              }}
+              onToggleCollapsed={(id) => commitModel((current) => ({
+                ...current,
+                visualGroups: {
+                  ...current.visualGroups,
+                  [id]: {
+                    ...current.visualGroups[id],
+                    collapsed: !current.visualGroups[id].collapsed,
+                  },
+                },
+              }))}
+              onStartDrag={handleStartGroupDrag}
+              onOpenMenu={(id, event) => {
+                setSelectedGroupId(id);
+                setGroupMenu({ id, x: event.clientX, y: event.clientY });
+              }}
+            />
+          ))}
           <CanvasEdges
             edges={allEdges}
             metrics={evaluation.metrics}
@@ -600,39 +1347,59 @@ export default function App() {
             hoveredEdgeKey={hoveredEdgeKey}
             onHoveredEdgeChange={setHoveredEdge}
           />
-          {Object.values(evaluation.metrics).map((metric) => (
-            <MetricCard
-              key={metric.id}
-              metric={metric}
-              selected={selectedSet.has(metric.id)}
-              relationHovered={hoveredEdge?.from === metric.id || hoveredEdge?.to === metric.id}
-              onSelect={selectMetric}
-              onDelete={handleDeleteMetric}
-              onStartDrag={handleStartDrag}
-              onContextMenu={(id, event) => {
-                setSelectedIds([id]);
-                setContextMenu({ id, x: event.clientX, y: event.clientY });
-              }}
-              delta={impactActive && impact?.deltas[metric.id] !== undefined && metric.id !== impact.inputId
-                ? impact.deltas[metric.id]
-                : undefined}
-              impactActive={impactActive}
-            />
-          ))}
-          {selectionStyle && (
+          {Object.values(evaluation.metrics)
+            .filter((metric) => !hiddenMetricIds.has(metric.id))
+            .map((metric) => (
+              <MetricCard
+                key={metric.id}
+                metric={metric}
+                isNorthStar={model.activeNorthStarId === metric.id}
+                selected={selectedSet.has(metric.id)}
+                relationHovered={hoveredEdge?.from === metric.id || hoveredEdge?.to === metric.id}
+                onSelect={selectMetric}
+                onDelete={handleDeleteMetric}
+                onStartDrag={handleStartDrag}
+                onConnectionPointerDown={handleConnectionPointerDown}
+                onContextMenu={(id, event) => {
+                  setSelectedIds([id]);
+                  setMetricMenu({ id, x: event.clientX, y: event.clientY });
+                }}
+                delta={impactActive && impact?.deltas[metric.id] !== undefined && metric.id !== impact.inputId
+                  ? impact.deltas[metric.id]
+                  : undefined}
+                impactActive={impactActive}
+              />
+            ))}
+          {connectionDraft ? (
+            <svg className="pointer-events-none absolute inset-0 z-[15] h-full w-full overflow-visible">
+              <path
+                d={`M ${connectionDraft.start.x} ${connectionDraft.start.y} C ${(connectionDraft.start.x + connectionDraft.end.x) / 2} ${connectionDraft.start.y}, ${(connectionDraft.start.x + connectionDraft.end.x) / 2} ${connectionDraft.end.y}, ${connectionDraft.end.x} ${connectionDraft.end.y}`}
+                fill="none"
+                stroke="#7c3aed"
+                strokeWidth={2.5 / Math.max(transform.scale, 0.05)}
+                strokeDasharray={`${7 / Math.max(transform.scale, 0.05)} ${5 / Math.max(transform.scale, 0.05)}`}
+                strokeLinecap="round"
+              />
+            </svg>
+          ) : null}
+          {selectionStyle ? (
             <div
-              className="absolute z-50 pointer-events-none rounded-[var(--radius-sm)] border border-primary bg-primary/10"
+              className="pointer-events-none absolute z-50 rounded-[var(--radius-sm)] border border-primary bg-primary/10"
               style={selectionStyle}
             />
-          )}
+          ) : null}
         </InfiniteCanvas>
 
         <GraphModeIndicator focus={graphFocus} selectedCount={selectedIds.length} />
 
         <InputPanel
           metrics={evaluation.metrics}
+          domains={domains}
+          collapsedDomainIds={collapsedDomainIds}
+          onToggleDomain={handleToggleDomain}
+          onManageDomain={handleOpenDomainManager}
           overriddenIds={overriddenIds}
-          selectedId={primarySelectedId}
+          selectedId={primarySelectedId ?? ''}
           onSelect={(id) => selectMetric(id)}
           onChangeInput={handleChangeInput}
           onReset={handleResetInput}
@@ -665,53 +1432,164 @@ export default function App() {
           onZoomOut={zoomOut}
           onFitToView={handleFitToView}
           onAutoLayout={handleAutoLayout}
-          onAddMetric={() => setCatalogOpen(true)}
+          onAddMetric={openCreateEditor}
           onUndo={undo}
           onRedo={redo}
           canUndo={history.past.length > 0}
           canRedo={history.future.length > 0}
           scale={transform.scale}
+          connectionModeActive={connectionMode}
+          onToggleConnectionMode={() => {
+            setConnectionMode((active) => !active);
+            setNotice('Протяните линию из правого порта исходной метрики в целевую карточку — откроется Formula Composer.');
+          }}
+          onGroupSelected={handleOpenGroupDialog}
+          canGroup={canGroupSelection}
+          onManageDomains={() => handleOpenDomainManager()}
         />
 
-        {notice && (
+        {notice ? (
           <button
             data-canvas-interactive="true"
             onClick={() => setNotice(null)}
-            className="absolute top-[3.75rem] left-1/2 -translate-x-1/2 z-40 max-w-[34rem] rounded-[var(--radius-lg)] border border-border bg-card px-[0.75rem] py-[0.5rem] text-left text-[0.6875rem] text-foreground shadow-lg cursor-pointer"
+            className="absolute left-1/2 top-[3.75rem] z-40 max-w-[36rem] -translate-x-1/2 cursor-pointer rounded-[var(--radius-lg)] border border-border bg-card px-[0.75rem] py-[0.5rem] text-left text-[0.6875rem] text-foreground shadow-lg"
             title="Закрыть"
           >
             {notice}
           </button>
-        )}
+        ) : null}
+
+        <NodeEditor
+          open={Boolean(editor)}
+          mode={editor?.mode ?? 'create'}
+          draft={editor?.draft ?? defaultMetricDraft()}
+          domains={domains}
+          onChange={(draft) => {
+            setEditor((current) => current ? { ...current, draft } : current);
+            setEditorError(null);
+          }}
+          onSave={handleSaveMetric}
+          onCancel={() => {
+            setEditor(null);
+            setFormulaOpen(false);
+            setEditorError(null);
+          }}
+          onCreateDomain={() => handleOpenDomainManager()}
+          onOpenFormula={() => setFormulaOpen(true)}
+          aliasError={editorAliasError}
+          formError={editorError ?? undefined}
+        />
+
+        <FormulaComposer
+          open={Boolean(editor && formulaOpen)}
+          metricName={editor?.draft.name || 'Новая метрика'}
+          metricAlias={editor?.draft.alias}
+          source={editor?.draft.formulaSource ?? ''}
+          aliases={Object.values(model.metrics)
+            .filter((metric) => metric.id !== editor?.metricId)
+            .map((metric) => ({
+              id: metric.id,
+              alias: metric.alias,
+              name: metric.name,
+              unitSymbol: metric.unit.symbol,
+            }))}
+          preview={formulaPreview}
+          onSourceChange={(formulaSource) => setEditor((current) => current
+            ? {
+                ...current,
+                draft: { ...current.draft, valueMode: 'formula', formulaSource },
+              }
+            : current)}
+          onSave={() => setFormulaOpen(false)}
+          onCancel={() => setFormulaOpen(false)}
+        />
+
+        <DomainManager
+          open={domainManagerOpen}
+          domains={domains}
+          metrics={model.metrics}
+          selectedMetricIds={selectedIds}
+          initialDomainId={domainManagerInitialId}
+          onClose={() => setDomainManagerOpen(false)}
+          onCreateDomain={handleCreateDomain}
+          onRenameDomain={handleRenameDomain}
+          onDeleteDomain={handleDeleteDomain}
+          onAssignMetrics={(domainId, ids) => updateDomainMembership(domainId, ids, true)}
+          onUnassignMetrics={(domainId, ids) => updateDomainMembership(domainId, ids, false)}
+        />
+
+        <VisualGroupDialog
+          open={Boolean(visualGroupEditor)}
+          mode={visualGroupEditor?.mode ?? 'create'}
+          initialName={groupBeingEdited?.name}
+          initialColor={groupBeingEdited?.color}
+          onSave={handleSaveVisualGroup}
+          onClose={() => setVisualGroupEditor(null)}
+        />
       </div>
 
-      {contextMenu && (
+      {metricMenu ? (
         <div
           data-canvas-interactive="true"
-          className="fixed z-[60] w-[12rem] rounded-[var(--radius-lg)] border border-border bg-card p-[0.25rem] shadow-xl"
-          style={{ left: contextMenu.x, top: contextMenu.y }}
+          className="fixed z-[80] w-[13rem] rounded-[var(--radius-lg)] border border-border bg-card p-[0.25rem] shadow-xl"
+          style={{ left: metricMenu.x, top: metricMenu.y }}
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          <button onClick={() => openEditEditor(metricMenu.id)} className="context-action">
+            Редактировать метрику
+          </button>
+          <button onClick={() => openEditEditor(metricMenu.id, true)} className="context-action">
+            Открыть формулу
+          </button>
+          {model.activeNorthStarId === metricMenu.id ? (
+            <button
+              onClick={() => {
+                commitModel((current) => ({ ...current, activeNorthStarId: null }));
+                setMetricMenu(null);
+              }}
+              className="context-action"
+            >
+              Убрать North Star
+            </button>
+          ) : (
+            <button
+              onClick={() => {
+                handleSetNorthStar(metricMenu.id);
+                setMetricMenu(null);
+              }}
+              className="context-action"
+            >
+              Сделать North Star
+            </button>
+          )}
+          <button onClick={() => handleDeleteMetric(metricMenu.id)} className="context-action text-red-600">
+            Удалить метрику
+          </button>
+        </div>
+      ) : null}
+
+      {groupMenu ? (
+        <div
+          data-canvas-interactive="true"
+          className="fixed z-[80] w-[12rem] rounded-[var(--radius-lg)] border border-border bg-card p-[0.25rem] shadow-xl"
+          style={{ left: groupMenu.x, top: groupMenu.y }}
           onPointerDown={(event) => event.stopPropagation()}
         >
           <button
             onClick={() => {
-              handleSetNorthStar(contextMenu.id);
-              setContextMenu(null);
+              setVisualGroupEditor({ mode: 'edit', groupId: groupMenu.id });
+              setGroupMenu(null);
             }}
             className="context-action"
           >
-            Сделать North Star
+            <Pencil className="mr-[0.375rem] inline size-[0.6875rem]" />
+            Изменить группу
           </button>
-          <button onClick={() => handleDeleteMetric(contextMenu.id)} className="context-action text-red-600">
-            Удалить метрику
+          <button onClick={() => handleDeleteVisualGroup(groupMenu.id)} className="context-action text-red-600">
+            Разгруппировать
           </button>
         </div>
-      )}
-
-      <MetricCatalogDialog
-        open={catalogOpen}
-        onClose={() => setCatalogOpen(false)}
-        onAddCustom={handleAddCustom}
-      />
+      ) : null}
     </div>
   );
 }

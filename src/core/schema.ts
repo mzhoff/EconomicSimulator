@@ -1,14 +1,14 @@
 import { topologicalOrder, validateFormula } from './evaluator';
+import { findDuplicateAliases, validateMetricAlias } from './formula-parser';
 import { MODEL_SCHEMA_VERSION } from './model';
 import type { FormulaNode, ModelState, ValidationIssue, WorkspaceDocument } from './model';
 
-const metricBehaviors = new Set(['stock', 'flow', 'rate', 'event']);
+const metricBehaviors = new Set(['stock', 'flow', 'rate']);
 const metricKinds = new Set(['input', 'derived', 'observed', 'assumption']);
 const valueSources = new Set(['input', 'derived', 'observed']);
 const knowledgeStatuses = new Set(['fact', 'assumption', 'scenario', 'target', 'benchmark', 'derived']);
 const validationStatuses = new Set(['valid', 'warning', 'error', 'incomplete']);
 const metricRoles = new Set(['north_star', 'driver', 'intermediate', 'output', 'guardrail', 'diagnostic', 'input', 'constraint']);
-const metricDomains = new Set(['demand', 'revenue', 'variable_costs', 'fixed_costs', 'capex', 'operations', 'results']);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -20,6 +20,10 @@ function isFiniteNumber(value: unknown): value is number {
 
 function requireString(record: Record<string, unknown>, key: string, path: string, issues: ValidationIssue[]): void {
   if (typeof record[key] !== 'string' || record[key] === '') issues.push({ path: `${path}.${key}`, message: 'Ожидается непустая строка.' });
+}
+
+function requireText(record: Record<string, unknown>, key: string, path: string, issues: ValidationIssue[]): void {
+  if (typeof record[key] !== 'string') issues.push({ path: `${path}.${key}`, message: 'Ожидается строка.' });
 }
 
 function validateUnit(value: unknown, path: string, issues: ValidationIssue[]): void {
@@ -110,11 +114,13 @@ function validateModelShape(value: unknown, path: string, issues: ValidationIssu
   }
   requireString(value, 'id', path, issues);
   requireString(value, 'name', path, issues);
-  requireString(value, 'description', path, issues);
-  requireString(value, 'activeNorthStarId', path, issues);
+  requireText(value, 'description', path, issues);
+  if (value.activeNorthStarId !== null && typeof value.activeNorthStarId !== 'string') {
+    issues.push({ path: `${path}.activeNorthStarId`, message: 'North Star должна быть id метрики или null.' });
+  }
 
-  if (!isRecord(value.metrics) || Object.keys(value.metrics).length === 0) {
-    issues.push({ path: `${path}.metrics`, message: 'Модель должна содержать метрики.' });
+  if (!isRecord(value.metrics)) {
+    issues.push({ path: `${path}.metrics`, message: 'Метрики должны быть объектом.' });
   } else {
     for (const [id, rawMetric] of Object.entries(value.metrics)) {
       const metricPath = `${path}.metrics.${id}`;
@@ -122,15 +128,28 @@ function validateModelShape(value: unknown, path: string, issues: ValidationIssu
         issues.push({ path: metricPath, message: 'Метрика должна быть объектом.' });
         continue;
       }
-      for (const key of ['id', 'definitionId', 'name', 'description']) requireString(rawMetric, key, metricPath, issues);
+      for (const key of ['id', 'definitionId', 'name', 'alias']) requireString(rawMetric, key, metricPath, issues);
+      requireText(rawMetric, 'description', metricPath, issues);
       if (rawMetric.id !== id) issues.push({ path: `${metricPath}.id`, message: 'Ключ метрики и id должны совпадать.' });
+      if (typeof rawMetric.alias === 'string') {
+        const aliasError = validateMetricAlias(rawMetric.alias);
+        if (aliasError) issues.push({ path: `${metricPath}.alias`, message: aliasError });
+      }
       if (!metricBehaviors.has(String(rawMetric.behavior))) issues.push({ path: `${metricPath}.behavior`, message: 'Неизвестный behavior.' });
       if (!metricKinds.has(String(rawMetric.kind))) issues.push({ path: `${metricPath}.kind`, message: 'Неизвестный kind.' });
       if (!valueSources.has(String(rawMetric.valueSource))) issues.push({ path: `${metricPath}.valueSource`, message: 'Неизвестный valueSource.' });
       if (!knowledgeStatuses.has(String(rawMetric.knowledgeStatus))) issues.push({ path: `${metricPath}.knowledgeStatus`, message: 'Неизвестный knowledgeStatus.' });
       if (!validationStatuses.has(String(rawMetric.validationStatus))) issues.push({ path: `${metricPath}.validationStatus`, message: 'Неизвестный validationStatus.' });
       if (!metricRoles.has(String(rawMetric.role))) issues.push({ path: `${metricPath}.role`, message: 'Неизвестная роль.' });
-      if (!metricDomains.has(String(rawMetric.domain))) issues.push({ path: `${metricPath}.domain`, message: 'Неизвестный домен.' });
+      requireString(rawMetric, 'domain', metricPath, issues);
+      if (
+        !Array.isArray(rawMetric.domainIds)
+        || rawMetric.domainIds.some((domainId) => typeof domainId !== 'string' || !domainId)
+      ) {
+        issues.push({ path: `${metricPath}.domainIds`, message: 'domainIds должен быть массивом непустых id доменов.' });
+      } else if (new Set(rawMetric.domainIds).size !== rawMetric.domainIds.length) {
+        issues.push({ path: `${metricPath}.domainIds`, message: 'Один домен нельзя назначить метрике дважды.' });
+      }
       if (rawMetric.value !== null && !isFiniteNumber(rawMetric.value)) issues.push({ path: `${metricPath}.value`, message: 'Значение должно быть конечным числом или null.' });
       validateUnit(rawMetric.unit, `${metricPath}.unit`, issues);
 
@@ -167,9 +186,63 @@ function validateModelShape(value: unknown, path: string, issues: ValidationIssu
           || !isFiniteNumber(rawMetric.inputConfig.max)
           || !isFiniteNumber(rawMetric.inputConfig.step)
           || rawMetric.inputConfig.step <= 0
+          || rawMetric.inputConfig.min >= rawMetric.inputConfig.max
         ) {
-          issues.push({ path: `${metricPath}.inputConfig`, message: 'Input config должен содержать min, max и положительный step.' });
+          issues.push({ path: `${metricPath}.inputConfig`, message: 'Input config должен содержать min < max и положительный step.' });
+        } else if (
+          rawMetric.formula === undefined
+          &&
+          isFiniteNumber(rawMetric.value)
+          && (rawMetric.value < rawMetric.inputConfig.min || rawMetric.value > rawMetric.inputConfig.max)
+        ) {
+          issues.push({ path: `${metricPath}.value`, message: 'Значение должно находиться между min и max.' });
         }
+      }
+    }
+  }
+
+  if (!isRecord(value.domains)) {
+    issues.push({ path: `${path}.domains`, message: 'Домены должны быть объектом.' });
+  } else {
+    for (const [id, rawDomain] of Object.entries(value.domains)) {
+      const domainPath = `${path}.domains.${id}`;
+      if (!isRecord(rawDomain)) {
+        issues.push({ path: domainPath, message: 'Домен должен быть объектом.' });
+        continue;
+      }
+      for (const key of ['id', 'name', 'color']) requireString(rawDomain, key, domainPath, issues);
+      requireText(rawDomain, 'description', domainPath, issues);
+      if (rawDomain.id !== id) issues.push({ path: `${domainPath}.id`, message: 'Ключ домена и id должны совпадать.' });
+      if (!Array.isArray(rawDomain.metricIds) || rawDomain.metricIds.some((metricId) => typeof metricId !== 'string')) {
+        issues.push({ path: `${domainPath}.metricIds`, message: 'metricIds должен быть массивом строк.' });
+      } else if (new Set(rawDomain.metricIds).size !== rawDomain.metricIds.length) {
+        issues.push({ path: `${domainPath}.metricIds`, message: 'Метрика не должна повторяться внутри домена.' });
+      }
+      if (!isFiniteNumber(rawDomain.order)) issues.push({ path: `${domainPath}.order`, message: 'Порядок домена должен быть числом.' });
+      if (rawDomain.collapsed !== undefined && typeof rawDomain.collapsed !== 'boolean') {
+        issues.push({ path: `${domainPath}.collapsed`, message: 'collapsed должен быть boolean.' });
+      }
+    }
+  }
+
+  if (!isRecord(value.visualGroups)) {
+    issues.push({ path: `${path}.visualGroups`, message: 'Визуальные группы должны быть объектом.' });
+  } else {
+    for (const [id, rawGroup] of Object.entries(value.visualGroups)) {
+      const groupPath = `${path}.visualGroups.${id}`;
+      if (!isRecord(rawGroup)) {
+        issues.push({ path: groupPath, message: 'Визуальная группа должна быть объектом.' });
+        continue;
+      }
+      for (const key of ['id', 'name', 'color']) requireString(rawGroup, key, groupPath, issues);
+      if (rawGroup.id !== id) issues.push({ path: `${groupPath}.id`, message: 'Ключ группы и id должны совпадать.' });
+      if (!Array.isArray(rawGroup.metricIds) || rawGroup.metricIds.some((metricId) => typeof metricId !== 'string')) {
+        issues.push({ path: `${groupPath}.metricIds`, message: 'metricIds должен быть массивом строк.' });
+      } else if (new Set(rawGroup.metricIds).size !== rawGroup.metricIds.length) {
+        issues.push({ path: `${groupPath}.metricIds`, message: 'Метрика не должна повторяться внутри группы.' });
+      }
+      if (typeof rawGroup.collapsed !== 'boolean') {
+        issues.push({ path: `${groupPath}.collapsed`, message: 'collapsed должен быть boolean.' });
       }
     }
   }
@@ -184,7 +257,7 @@ function validateModelShape(value: unknown, path: string, issues: ValidationIssu
       }
       if (scenario.id !== id) issues.push({ path: `${path}.scenarios.${id}.id`, message: 'Ключ сценария и id должны совпадать.' });
       requireString(scenario, 'label', `${path}.scenarios.${id}`, issues);
-      requireString(scenario, 'description', `${path}.scenarios.${id}`, issues);
+      requireText(scenario, 'description', `${path}.scenarios.${id}`, issues);
       if (!isRecord(scenario.overrides) || Object.values(scenario.overrides).some((item) => !isFiniteNumber(item))) {
         issues.push({ path: `${path}.scenarios.${id}.overrides`, message: 'Overrides должны быть конечными числами.' });
       }
@@ -210,10 +283,21 @@ function validateModelShape(value: unknown, path: string, issues: ValidationIssu
 }
 
 function validateModelSemantics(model: ModelState, issues: ValidationIssue[]): void {
-  if (!model.metrics[model.activeNorthStarId]) {
+  if (model.activeNorthStarId !== null && !model.metrics[model.activeNorthStarId]) {
     issues.push({ path: 'model.activeNorthStarId', message: 'North Star должна ссылаться на существующую метрику.' });
   }
+  for (const alias of findDuplicateAliases(model.metrics)) {
+    issues.push({ path: 'model.metrics', message: `Alias «${alias}» используется несколькими метриками.` });
+  }
   for (const metric of Object.values(model.metrics)) {
+    for (const domainId of metric.domainIds) {
+      const domain = model.domains[domainId];
+      if (!domain) {
+        issues.push({ path: `model.metrics.${metric.id}.domainIds`, message: `Домен «${domainId}» не существует.` });
+      } else if (!domain.metricIds.includes(metric.id)) {
+        issues.push({ path: `model.metrics.${metric.id}.domainIds`, message: `Домен «${domainId}» не содержит метрику в metricIds.` });
+      }
+    }
     for (const message of validateFormula(metric, model.metrics)) {
       issues.push({ path: `model.metrics.${metric.id}.formula`, message });
     }
@@ -227,7 +311,24 @@ function validateModelSemantics(model: ModelState, issues: ValidationIssue[]): v
     for (const metricId of Object.keys(scenario.overrides)) {
       const metric = model.metrics[metricId];
       if (!metric) issues.push({ path: `model.scenarios.${scenario.id}.overrides.${metricId}`, message: 'Override ссылается на отсутствующую метрику.' });
-      else if (metric.kind === 'derived') issues.push({ path: `model.scenarios.${scenario.id}.overrides.${metricId}`, message: 'Нельзя переопределять derived-метрику.' });
+      else if (metric.formula) issues.push({ path: `model.scenarios.${scenario.id}.overrides.${metricId}`, message: 'Нельзя переопределять метрику с формулой.' });
+    }
+  }
+  for (const domain of Object.values(model.domains)) {
+    for (const metricId of domain.metricIds) {
+      const metric = model.metrics[metricId];
+      if (!metric) {
+        issues.push({ path: `model.domains.${domain.id}.metricIds`, message: `Метрика «${metricId}» не существует.` });
+      } else if (!metric.domainIds.includes(domain.id)) {
+        issues.push({ path: `model.domains.${domain.id}.metricIds`, message: `Метрика «${metricId}» не ссылается на домен.` });
+      }
+    }
+  }
+  for (const group of Object.values(model.visualGroups)) {
+    for (const metricId of group.metricIds) {
+      if (!model.metrics[metricId]) {
+        issues.push({ path: `model.visualGroups.${group.id}.metricIds`, message: `Метрика «${metricId}» не существует.` });
+      }
     }
   }
   for (const relation of model.influenceRelations) {
@@ -294,8 +395,8 @@ export function validateWorkspaceDocument(
       const metric = workspace.model.metrics[metricId];
       if (!metric) {
         issues.push({ path: `workspace.inputOverridesByScenario.${overrideScenarioId}.${metricId}`, message: 'Override ссылается на отсутствующую метрику.' });
-      } else if (metric.kind === 'derived' || metric.behavior === 'event') {
-        issues.push({ path: `workspace.inputOverridesByScenario.${overrideScenarioId}.${metricId}`, message: 'Нельзя переопределять derived или Event.' });
+      } else if (metric.formula) {
+        issues.push({ path: `workspace.inputOverridesByScenario.${overrideScenarioId}.${metricId}`, message: 'Нельзя переопределять метрику с формулой.' });
       }
     }
   }

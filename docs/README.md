@@ -66,6 +66,16 @@ EconomicSimulator должен помогать продукт-менеджер�
 - цвета upstream, downstream, impact, ошибок и guardrail;
 - что интерфейс сознательно пока не пытается закодировать линиями.
 
+### 6. Универсальный конструктор
+
+[Phase 2: Universal Model Builder](phase-2-universal-builder.md) фиксирует
+согласованный минимальный контракт ручного построения моделей: три behavior,
+aliases, Formula Composer, Canvas-соединения, пользовательские Domain
+many-to-many и Visual Groups.
+
+[Отчёт по реализации Phase 2](phase-2-implementation.md) перечисляет
+фактически работающие функции, проверки и сознательно отложенные возможности.
+
 ## Термины
 
 | Термин | Простое объяснение |
@@ -83,6 +93,6 @@ EconomicSimulator должен помогать продукт-менеджер�
 
 ## Статус
 
-Phase 1 реализована в ветке `agent/phase-1-tokberi-foundation`. История событий,
-time-series, безопасный визуальный редактор произвольных формул и фактический
-импорт из backend остаются следующими этапами.
+Phase 1 и минимальный Universal Model Builder реализованы. История событий,
+time-series, импорт факта из backend, каталог метрик и расширенный Decision
+Analysis остаются следующими этапами.

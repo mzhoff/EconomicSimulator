@@ -23,7 +23,7 @@ interface InspectorPanelProps {
   metrics: Record<string, MetricDef>;
   baselineMetrics: Record<string, MetricDef>;
   model: ModelState;
-  selectedId: string;
+  selectedId: string | null;
   scenarioId: string;
   thresholds: {
     breakEven: ThresholdResult;
@@ -76,7 +76,7 @@ export function InspectorPanel({
   onSetNorthStar,
   onChangeShock,
 }: InspectorPanelProps) {
-  const selected = metrics[selectedId];
+  const selected = selectedId ? metrics[selectedId] : undefined;
   const relations = getCalculationRelations(model);
   const parents = relations
     .filter((relation) => relation.to === selectedId)
@@ -87,7 +87,9 @@ export function InspectorPanel({
     .map((relation) => metrics[relation.to])
     .filter(Boolean);
   const selectedIsInput = selected?.kind !== 'derived';
-  const activeNorthStar = metrics[model.activeNorthStarId];
+  const activeNorthStar = model.activeNorthStarId
+    ? metrics[model.activeNorthStarId]
+    : undefined;
 
   return (
     <>

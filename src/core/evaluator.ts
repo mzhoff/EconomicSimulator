@@ -1,4 +1,4 @@
-import { extractDependencies } from './ast';
+import { analyzeMetricFormulaRelations } from './relation-analysis';
 import type {
   CalculationRelation,
   EvaluationResult,
@@ -41,12 +41,6 @@ function unitMismatch(left: UnitSpec, right: UnitSpec): Error {
   return new Error(`Несовместимые единицы: ${describeUnit(left)} и ${describeUnit(right)}.`);
 }
 
-function assertArithmeticBehavior(left: InferredNode, right: InferredNode): void {
-  if (left.behavior === 'event' || right.behavior === 'event') {
-    throw new Error('Event нельзя использовать в арифметике. Сначала примените count, sum или другую явную агрегацию.');
-  }
-}
-
 function inferProductBehavior(left: InferredNode, right: InferredNode): MetricBehavior {
   if (left.zeroLiteral || right.zeroLiteral) return left.zeroLiteral ? right.behavior : left.behavior;
   if (isDimensionless(left.unit)) return right.behavior;
@@ -58,7 +52,7 @@ function inferProductBehavior(left: InferredNode, right: InferredNode): MetricBe
   ) {
     return 'flow';
   }
-  if (left.behavior === 'stock' && right.behavior === 'stock') return 'stock';
+  if (left.behavior === 'stock' || right.behavior === 'stock') return 'stock';
   return 'rate';
 }
 
@@ -78,7 +72,6 @@ export function inferFormulaNode(node: FormulaNode, metrics: Record<string, Metr
     case 'binary': {
       const left = inferFormulaNode(node.left, metrics);
       const right = inferFormulaNode(node.right, metrics);
-      assertArithmeticBehavior(left, right);
 
       if (node.operator === 'add' || node.operator === 'subtract') {
         if (!left.zeroLiteral && !right.zeroLiteral && !unitsEqual(left.unit, right.unit)) {
@@ -102,25 +95,26 @@ export function inferFormulaNode(node: FormulaNode, metrics: Record<string, Metr
         };
       }
 
+      const dividedUnit = divideUnits(left.unit, right.unit);
       return {
-        unit: divideUnits(left.unit, right.unit),
-        behavior: left.behavior === 'flow' && right.behavior === 'flow' ? 'rate' : left.behavior,
+        unit: dividedUnit,
+        behavior: (
+          isDuration(dividedUnit)
+          || (left.behavior === 'flow' && right.behavior === 'flow')
+          || (left.behavior === 'stock' && right.behavior === 'stock')
+        )
+          ? 'rate'
+          : left.behavior,
         grain: left.grain ?? right.grain,
       };
     }
     case 'unary': {
       const operand = inferFormulaNode(node.operand, metrics);
-      if (operand.behavior === 'event') {
-        throw new Error('Event нельзя округлять или преобразовывать как число.');
-      }
       return operand;
     }
     case 'function': {
       if (node.args.length === 0) throw new Error(`${node.name} требует хотя бы один аргумент.`);
       const args = node.args.map((arg) => inferFormulaNode(arg, metrics));
-      args.forEach((arg) => {
-        if (arg.behavior === 'event') throw new Error('Event нельзя использовать в min/max без агрегации.');
-      });
       const reference = args.find((arg) => !arg.zeroLiteral) ?? args[0];
       for (const arg of args) {
         if (!arg.zeroLiteral && !unitsEqual(arg.unit, reference.unit)) throw unitMismatch(arg.unit, reference.unit);
@@ -133,7 +127,6 @@ export function inferFormulaNode(node: FormulaNode, metrics: Record<string, Metr
     case 'comparison': {
       const left = inferFormulaNode(node.left, metrics);
       const right = inferFormulaNode(node.right, metrics);
-      assertArithmeticBehavior(left, right);
       if (!left.zeroLiteral && !right.zeroLiteral && !unitsEqual(left.unit, right.unit)) {
         throw unitMismatch(left.unit, right.unit);
       }
@@ -209,12 +202,22 @@ function evaluateNode(node: FormulaNode, context: EvaluationContext): number | b
   }
 }
 
-export function getCalculationRelations(model: ModelState): CalculationRelation[] {
+export function getCalculationRelations(
+  model: ModelState,
+  currentMetrics: Record<string, MetricDef> = model.metrics,
+): CalculationRelation[] {
   const relations: CalculationRelation[] = [];
   for (const metric of Object.values(model.metrics)) {
     if (!metric.formula) continue;
-    for (const dependency of extractDependencies(metric.formula.ast)) {
-      relations.push({ from: dependency, to: metric.id, type: 'calc', sign: 1 });
+    for (const metadata of analyzeMetricFormulaRelations(metric, model, currentMetrics)) {
+      relations.push({
+        from: metadata.dependencyId,
+        to: metric.id,
+        type: 'calc',
+        sign: metadata.sign,
+        operation: metadata.operation,
+        direction: metadata.direction,
+      });
     }
   }
   return relations;
@@ -260,6 +263,11 @@ export function validateFormula(metric: MetricDef, metrics: Record<string, Metri
     if (!unitsEqual(inferred.unit, metric.unit)) {
       return [
         `Формула возвращает ${describeUnit(inferred.unit)}, но метрика объявлена как ${describeUnit(metric.unit)}.`,
+      ];
+    }
+    if (inferred.behavior !== metric.behavior) {
+      return [
+        `Формула описывает ${inferred.behavior}, но метрика объявлена как ${metric.behavior}.`,
       ];
     }
     return [];
@@ -360,10 +368,10 @@ export function evaluateModel(
   const scenario = model.scenarios[scenarioId] ?? model.scenarios.base;
 
   for (const [id, value] of Object.entries(scenario?.overrides ?? {})) {
-    if (metrics[id] && metrics[id].kind !== 'derived') metrics[id].value = value;
+    if (metrics[id] && !metrics[id].formula) metrics[id].value = value;
   }
   for (const [id, value] of Object.entries(inputOverrides)) {
-    if (metrics[id] && metrics[id].kind !== 'derived') metrics[id].value = value;
+    if (metrics[id] && !metrics[id].formula) metrics[id].value = value;
   }
 
   let order: string[];
@@ -372,7 +380,7 @@ export function evaluateModel(
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Расчётный граф невалиден.';
     for (const metric of Object.values(metrics)) {
-      if (metric.kind === 'derived') {
+      if (metric.formula || metric.kind === 'derived') {
         metric.value = null;
         metric.validationStatus = 'error';
         metric.validationMessages = [message];
@@ -384,12 +392,7 @@ export function evaluateModel(
 
   for (const id of order) {
     const metric = metrics[id];
-    if (metric.kind !== 'derived') {
-      if (metric.behavior === 'event') {
-        metric.validationStatus = 'valid';
-        metric.validationMessages = [];
-        continue;
-      }
+    if (!metric.formula && metric.kind !== 'derived') {
       if (metric.value === null || !Number.isFinite(metric.value)) {
         metric.validationStatus = 'error';
         metric.validationMessages = ['Введите конечное числовое значение.'];

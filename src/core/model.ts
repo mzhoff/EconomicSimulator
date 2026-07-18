@@ -1,6 +1,7 @@
-export const MODEL_SCHEMA_VERSION = 1 as const;
+export const MODEL_SCHEMA_VERSION = 2 as const;
+export const LEGACY_MODEL_SCHEMA_VERSION = 1 as const;
 
-export type MetricBehavior = 'stock' | 'flow' | 'rate' | 'event';
+export type MetricBehavior = 'stock' | 'flow' | 'rate';
 export type MetricKind = 'input' | 'derived' | 'observed' | 'assumption';
 export type MetricDomain =
   | 'demand'
@@ -23,6 +24,8 @@ export type ValueSource = 'input' | 'derived' | 'observed';
 export type KnowledgeStatus = 'fact' | 'assumption' | 'scenario' | 'target' | 'benchmark' | 'derived';
 export type ValidationStatus = 'valid' | 'warning' | 'error' | 'incomplete';
 export type RelationType = 'calc' | 'influence';
+export type CalculationOperation = 'direct' | 'add' | 'subtract' | 'multiply' | 'divide' | 'mixed';
+export type CalculationDirection = 'positive' | 'negative' | 'neutral' | 'dynamic';
 
 export interface UnitSpec {
   symbol: string;
@@ -101,6 +104,7 @@ export interface MetricDef {
   id: string;
   definitionId: string;
   name: string;
+  alias: string;
   description: string;
   behavior: MetricBehavior;
   unit: UnitSpec;
@@ -109,6 +113,7 @@ export interface MetricDef {
   knowledgeStatus: KnowledgeStatus;
   kind: MetricKind;
   domain: MetricDomain;
+  domainIds: string[];
   role: MetricRole;
   value: number | null;
   formula?: FormulaSpec;
@@ -131,6 +136,8 @@ export interface CalculationRelation {
   to: string;
   type: 'calc';
   sign: number;
+  operation: CalculationOperation;
+  direction: CalculationDirection;
 }
 
 export interface InfluenceRelation {
@@ -146,13 +153,33 @@ export interface InfluenceRelation {
 
 export type Edge = CalculationRelation | InfluenceRelation;
 
+export interface DomainDef {
+  id: string;
+  name: string;
+  color: string;
+  description: string;
+  metricIds: string[];
+  order: number;
+  collapsed?: boolean;
+}
+
+export interface VisualGroupDef {
+  id: string;
+  name: string;
+  color: string;
+  metricIds: string[];
+  collapsed: boolean;
+}
+
 export interface ModelState {
   schemaVersion: typeof MODEL_SCHEMA_VERSION;
   id: string;
   name: string;
   description: string;
-  activeNorthStarId: string;
+  activeNorthStarId: string | null;
   metrics: Record<string, MetricDef>;
+  domains: Record<string, DomainDef>;
+  visualGroups: Record<string, VisualGroupDef>;
   scenarios: Record<string, Scenario>;
   influenceRelations: InfluenceRelation[];
 }
@@ -197,7 +224,7 @@ export type Shock =
 
 export interface ImpactResult {
   inputId: string;
-  northStarId: string;
+  northStarId: string | null;
   beforeInput: number;
   afterInput: number;
   beforeNorthStar: number | null;

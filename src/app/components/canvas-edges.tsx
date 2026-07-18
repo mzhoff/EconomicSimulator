@@ -1,8 +1,6 @@
 import { memo, useMemo } from 'react';
 import type { Edge, GraphFocusState, MetricDef } from './metric-engine';
-
-const CARD_WIDTH = 272;
-const CARD_HEIGHT = 112;
+import { getMetricPortPosition } from './metric-geometry';
 
 const COLORS = {
   calculation: '#94a3b8',
@@ -14,6 +12,7 @@ const COLORS = {
   positive: '#059669',
   negative: '#dc2626',
   neutralImpact: '#64748b',
+  dynamic: '#d97706',
   warning: '#d97706',
   error: '#dc2626',
 } as const;
@@ -35,6 +34,7 @@ interface EdgePresentation {
   markerId: keyof typeof MARKER_COLORS;
   dash?: number[];
   label: string;
+  operator?: string;
 }
 
 interface ProblemPaths {
@@ -52,12 +52,40 @@ const MARKER_COLORS = {
   positive: COLORS.positive,
   negative: COLORS.negative,
   neutralImpact: COLORS.neutralImpact,
+  dynamic: COLORS.dynamic,
   warning: COLORS.warning,
   error: COLORS.error,
 } as const;
 
 const edgeKey = (edge: Edge): string => `${edge.from}-${edge.to}`;
 const rounded = (value: number): number => Math.round(value * 10) / 10;
+
+function operationSymbol(edge: Edge): string | undefined {
+  if (edge.type !== 'calc') return undefined;
+  if (edge.operation === 'add') return '+';
+  if (edge.operation === 'subtract') return '−';
+  if (edge.operation === 'multiply') return '×';
+  if (edge.operation === 'divide') return '÷';
+  if (edge.operation === 'mixed') return 'ƒ';
+  return '→';
+}
+
+function calculationSemantics(edge: Extract<Edge, { type: 'calc' }>): {
+  color: string;
+  markerId: keyof typeof MARKER_COLORS;
+  label: string;
+} {
+  if (edge.direction === 'positive') {
+    return { color: COLORS.positive, markerId: 'positive', label: 'повышает' };
+  }
+  if (edge.direction === 'negative') {
+    return { color: COLORS.negative, markerId: 'negative', label: 'понижает' };
+  }
+  if (edge.direction === 'dynamic') {
+    return { color: COLORS.dynamic, markerId: 'dynamic', label: 'зависит от значений' };
+  }
+  return { color: COLORS.neutralImpact, markerId: 'neutralImpact', label: 'нейтральна сейчас' };
+}
 
 function computeProblemPaths(
   edges: Edge[],
@@ -129,21 +157,36 @@ function edgePresentation(
   problemPaths: ProblemPaths,
 ): EdgePresentation {
   const key = edgeKey(edge);
-  const fromMetric = metrics[edge.from];
   const toMetric = metrics[edge.to];
   const isDirect = focus.directEdges.has(key);
   const isRelevant = focus.relevantEdges.has(key);
   const hasError = problemPaths.error.has(key);
   const hasWarning = problemPaths.warning.has(key);
+  const calculation = edge.type === 'calc' ? calculationSemantics(edge) : null;
+  const operator = operationSymbol(edge);
   const relationLabel = edge.type === 'influence'
     ? `Influence ${edge.sign >= 0 ? '+' : '−'} · confidence ${edge.confidence}`
-    : `Calculation → ${toMetric?.name ?? edge.to}`;
+    : `Calculation ${operator} · ${calculation?.label} → ${toMetric?.name ?? edge.to}`;
 
   if (hasError) {
-    return { color: COLORS.error, screenWidth: 3.5, opacity: 1, markerId: 'error', label: `Проблемный расчётный путь → ${toMetric?.name ?? edge.to}` };
+    return {
+      color: COLORS.error,
+      screenWidth: 3.5,
+      opacity: 1,
+      markerId: 'error',
+      label: `Проблемный расчётный путь → ${toMetric?.name ?? edge.to}`,
+      operator,
+    };
   }
   if (hasWarning) {
-    return { color: COLORS.warning, screenWidth: 3.25, opacity: 1, markerId: 'warning', label: `Guardrail-путь → ${toMetric?.name ?? edge.to}` };
+    return {
+      color: COLORS.warning,
+      screenWidth: 3.25,
+      opacity: 1,
+      markerId: 'warning',
+      label: `Guardrail-путь → ${toMetric?.name ?? edge.to}`,
+      operator,
+    };
   }
   if (focus.mode === 'analysis' && focus.analysisEdges.has(key)) {
     const delta = impactDeltas?.[edge.to] ?? 0;
@@ -156,33 +199,40 @@ function edgePresentation(
       markerId,
       dash: edge.type === 'influence' ? [8, 6] : undefined,
       label: `Impact ${delta > 0 ? '+' : ''}${delta.toFixed(1)}% → ${toMetric?.name ?? edge.to}`,
+      operator,
     };
   }
   if (focus.mode === 'focus' && focus.upstreamEdges.has(key)) {
     return {
-      color: COLORS.upstream,
+      color: calculation?.color ?? COLORS.upstream,
       screenWidth: isDirect ? 3.5 : 2.75,
       opacity: isDirect ? 1 : 0.82,
-      markerId: 'upstream',
-      label: `Upstream → ${toMetric?.name ?? edge.to}`,
+      markerId: calculation?.markerId ?? 'upstream',
+      dash: edge.type === 'influence' ? [8, 6] : undefined,
+      label: `Upstream · ${relationLabel}`,
+      operator,
     };
   }
   if (focus.mode === 'focus' && focus.downstreamEdges.has(key)) {
     return {
-      color: COLORS.downstream,
+      color: calculation?.color ?? COLORS.downstream,
       screenWidth: isDirect ? 3.5 : 2.75,
       opacity: isDirect ? 1 : 0.82,
-      markerId: 'downstream',
-      label: `Downstream → ${toMetric?.name ?? edge.to}`,
+      markerId: calculation?.markerId ?? 'downstream',
+      dash: edge.type === 'influence' ? [8, 6] : undefined,
+      label: `Downstream · ${relationLabel}`,
+      operator,
     };
   }
   if (focus.mode === 'multi' && focus.connectingEdges.has(key)) {
     return {
-      color: COLORS.connecting,
+      color: calculation?.color ?? COLORS.connecting,
       screenWidth: isDirect ? 3.75 : 3,
       opacity: 1,
-      markerId: 'connecting',
-      label: `Путь между выбранными → ${toMetric?.name ?? edge.to}`,
+      markerId: calculation?.markerId ?? 'connecting',
+      dash: edge.type === 'influence' ? [8, 6] : undefined,
+      label: `Путь между выбранными · ${relationLabel}`,
+      operator,
     };
   }
   if (isDirect && edge.type === 'influence') {
@@ -193,16 +243,18 @@ function edgePresentation(
       markerId: 'influence',
       dash: [8, 6],
       label: relationLabel,
+      operator,
     };
   }
   if (focus.mode !== 'structure' && !isRelevant) {
     return {
-      color: edge.type === 'influence' ? COLORS.influence : COLORS.calculation,
+      color: edge.type === 'influence' ? COLORS.influence : calculation!.color,
       screenWidth: edge.type === 'influence' ? 1.6 : 1.35,
       opacity: 0.11,
-      markerId: edge.type === 'influence' ? 'influence' : 'calculation',
+      markerId: edge.type === 'influence' ? 'influence' : calculation!.markerId,
       dash: edge.type === 'influence' ? [8, 6] : undefined,
       label: relationLabel,
+      operator,
     };
   }
   if (edge.type === 'influence') {
@@ -213,23 +265,26 @@ function edgePresentation(
       markerId: 'influence',
       dash: [8, 6],
       label: relationLabel,
+      operator,
     };
   }
   if (focus.backboneEdges.has(key)) {
     return {
-      color: COLORS.backbone,
-      screenWidth: 1.9,
-      opacity: 0.72,
-      markerId: 'backbone',
+      color: calculation!.color,
+      screenWidth: 2.15,
+      opacity: 0.82,
+      markerId: calculation!.markerId,
       label: relationLabel,
+      operator,
     };
   }
   return {
-    color: COLORS.calculation,
-    screenWidth: 1.45,
-    opacity: 0.4,
-    markerId: 'calculation',
+    color: calculation!.color,
+    screenWidth: 1.75,
+    opacity: 0.58,
+    markerId: calculation!.markerId,
     label: relationLabel,
+    operator,
   };
 }
 
@@ -283,10 +338,12 @@ export const CanvasEdges = memo(function CanvasEdges({
         const renderKey = `${edge.type}-${relationKey}`;
         const presentation = edgePresentation(edge, metrics, focus, impactDeltas, problemPaths);
         const isHovered = hoveredEdgeKey === relationKey;
-        const x1 = fromMetric.position.x + CARD_WIDTH;
-        const y1 = fromMetric.position.y + CARD_HEIGHT / 2;
-        const x2 = toMetric.position.x;
-        const y2 = toMetric.position.y + CARD_HEIGHT / 2;
+        const sourcePort = getMetricPortPosition(fromMetric.position, fromMetric.behavior, 'output');
+        const targetPort = getMetricPortPosition(toMetric.position, toMetric.behavior, 'input');
+        const x1 = sourcePort.x;
+        const y1 = sourcePort.y;
+        const x2 = targetPort.x;
+        const y2 = targetPort.y;
         const path = connectionPath(x1, y1, x2, y2, safeScale);
         const screenWidth = isHovered ? Math.max(presentation.screenWidth + 0.75, 3.25) : presentation.screenWidth;
         const strokeWidth = screenWidth / safeScale;
@@ -330,6 +387,27 @@ export const CanvasEdges = memo(function CanvasEdges({
                   fontWeight={700}
                 >
                   {edge.sign >= 0 ? '+' : '−'}
+                </text>
+              </g>
+            ) : null}
+            {edge.type === 'calc' && presentation.operator && presentation.opacity > 0.2 ? (
+              <g transform={`translate(${x2 - 17 / safeScale} ${y2 - 11 / safeScale})`}>
+                <circle
+                  r={7.5 / safeScale}
+                  fill="#ffffff"
+                  stroke={presentation.color}
+                  strokeWidth={1.5 / safeScale}
+                  opacity={0.98}
+                />
+                <text
+                  x={0}
+                  y={3.6 / safeScale}
+                  textAnchor="middle"
+                  fill={presentation.color}
+                  fontSize={10.5 / safeScale}
+                  fontWeight={750}
+                >
+                  {presentation.operator}
                 </text>
               </g>
             ) : null}

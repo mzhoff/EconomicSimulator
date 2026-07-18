@@ -1,10 +1,23 @@
 import { describe, expect, it } from 'vitest';
 import fixture from './fixtures/tokberi-base-station.json';
-import { add, ref } from './ast';
 import { computeGraphFocus, computeImpact, computeTokBeriThresholds } from './analysis';
-import { evaluateModel } from './evaluator';
+import { createBlankModel } from './builder';
+import { evaluateModel, getCalculationRelations } from './evaluator';
+import {
+  assertUniqueMetricAlias,
+  formatFormulaAst,
+  parseFormula,
+} from './formula-parser';
 import { validateModelDocument } from './schema';
-import { createWorkspaceDocument, importWorkspace, serializeWorkspace } from './storage';
+import {
+  createWorkspaceDocument,
+  importWorkspace,
+  LEGACY_WORKSPACE_STORAGE_KEY,
+  loadWorkspace,
+  MIGRATION_BACKUP_KEY,
+  serializeWorkspace,
+  WORKSPACE_STORAGE_KEY,
+} from './storage';
 import { createTokBeriModel } from './tokberi-template';
 
 describe('TokBeri reference model', () => {
@@ -90,10 +103,7 @@ describe('TokBeri reference model', () => {
 describe('schema, AST and DAG safety', () => {
   it('rejects a calculation cycle', () => {
     const model = structuredClone(createTokBeriModel());
-    model.metrics.cash_contribution.formula = {
-      source: 'profit_before_tax',
-      ast: ref('profit_before_tax'),
-    };
+    model.metrics.cash_contribution.formula = parseFormula('profit_before_tax', model.metrics);
 
     const checked = validateModelDocument(model);
     expect(checked.ok).toBe(false);
@@ -102,23 +112,23 @@ describe('schema, AST and DAG safety', () => {
 
   it('rejects incompatible units', () => {
     const model = structuredClone(createTokBeriModel());
-    model.metrics.profit_before_tax.formula = {
-      source: 'cash_contribution + successful_rentals',
-      ast: add(ref('cash_contribution'), ref('successful_rentals')),
-    };
+    model.metrics.profit_before_tax.formula = parseFormula(
+      'cash_contribution + successful_rentals',
+      model.metrics,
+    );
 
     const checked = validateModelDocument(model);
     expect(checked.ok).toBe(false);
     if (!checked.ok) expect(checked.issues.some((issue) => issue.message.includes('Несовместимые единицы'))).toBe(true);
   });
 
-  it('rejects Event in ordinary arithmetic', () => {
-    const model = structuredClone(createTokBeriModel());
-    model.metrics.lost_units.behavior = 'event';
-
+  it('allows only Stock, Flow and Rate in schema v2', () => {
+    const model = structuredClone(createTokBeriModel()) as unknown as Record<string, unknown>;
+    const metrics = model.metrics as Record<string, Record<string, unknown>>;
+    metrics.lost_units.behavior = 'event';
     const checked = validateModelDocument(model);
     expect(checked.ok).toBe(false);
-    if (!checked.ok) expect(checked.issues.some((issue) => issue.message.includes('Event нельзя'))).toBe(true);
+    if (!checked.ok) expect(checked.issues.some((issue) => issue.path.endsWith('.behavior'))).toBe(true);
   });
 
   it('round-trips formulas, scenarios and positions through JSON', () => {
@@ -139,5 +149,135 @@ describe('schema, AST and DAG safety', () => {
       workspace.model.metrics.profit_before_tax.position,
     );
     expect(evaluateModel(imported.workspace.model, 'good', { rentals_per_day: 4.5 }).errors).toEqual([]);
+  });
+});
+
+describe('universal builder schema v2', () => {
+  it('creates a valid empty model without a forced North Star', () => {
+    const model = createBlankModel('Пустая модель');
+    expect(model.activeNorthStarId).toBeNull();
+    expect(model.metrics).toEqual({});
+    expect(validateModelDocument(model)).toMatchObject({ ok: true });
+  });
+
+  it('parses aliases with arithmetic precedence and stores metric ids in AST', () => {
+    const model = createTokBeriModel();
+    const formula = parseFormula(
+      'rental_revenue - sim_cost * 2',
+      model.metrics,
+    );
+
+    expect(formula.ast).toEqual({
+      type: 'binary',
+      operator: 'subtract',
+      left: { type: 'metric', metricId: 'rental_revenue' },
+      right: {
+        type: 'binary',
+        operator: 'multiply',
+        left: { type: 'metric', metricId: 'sim_cost' },
+        right: { type: 'literal', value: 2 },
+      },
+    });
+  });
+
+  it('keeps parsed formulas valid when an alias is renamed', () => {
+    const model = structuredClone(createTokBeriModel());
+    model.metrics.cash_contribution.formula = parseFormula(
+      'rental_revenue - sim_cost',
+      model.metrics,
+    );
+    model.metrics.rental_revenue.alias = 'monthly_rental_revenue';
+
+    expect(formatFormulaAst(model.metrics.cash_contribution.formula.ast, model.metrics))
+      .toBe('monthly_rental_revenue - sim_cost');
+    expect(evaluateModel(model).metrics.cash_contribution.value).not.toBeNull();
+  });
+
+  it('rejects duplicate aliases with a readable error', () => {
+    const model = structuredClone(createTokBeriModel());
+    expect(() => assertUniqueMetricAlias(
+      model.metrics.sim_cost.alias,
+      model.metrics,
+      model.metrics.maintenance_cost.id,
+    )).toThrow('уже используется');
+
+    model.metrics.maintenance_cost.alias = model.metrics.sim_cost.alias;
+    const checked = validateModelDocument(model);
+    expect(checked.ok).toBe(false);
+    if (!checked.ok) expect(checked.issues.some((issue) => issue.message.includes('Alias'))).toBe(true);
+  });
+
+  it('derives operation and local direction metadata for calculation edges', () => {
+    const model = structuredClone(createTokBeriModel());
+    const advancedRelation = getCalculationRelations(model).find(
+      (candidate) => candidate.from === 'rental_revenue' && candidate.to === 'contribution_margin',
+    );
+    expect(advancedRelation).toMatchObject({
+      operation: 'mixed',
+      direction: 'dynamic',
+    });
+
+    model.metrics.payback_months.formula = parseFormula(
+      'total_capex / cash_contribution',
+      model.metrics,
+    );
+    const relations = getCalculationRelations(model);
+    const relation = (from: string, to: string) => relations.find(
+      (candidate) => candidate.from === from && candidate.to === to,
+    );
+
+    expect(relation('cash_contribution', 'profit_before_tax')).toMatchObject({
+      operation: 'add',
+      direction: 'positive',
+      sign: 1,
+    });
+    expect(relation('station_depreciation', 'profit_before_tax')).toMatchObject({
+      operation: 'subtract',
+      direction: 'negative',
+      sign: -1,
+    });
+    expect(relation('successful_rentals', 'rental_revenue')).toMatchObject({
+      operation: 'multiply',
+      direction: 'positive',
+    });
+    expect(relation('cash_contribution', 'payback_months')).toMatchObject({
+      operation: 'divide',
+      direction: 'negative',
+    });
+  });
+
+  it('migrates a saved v1 workspace with aliases, many-to-many domains and backup', () => {
+    const v2 = createWorkspaceDocument(createTokBeriModel());
+    const legacy = structuredClone(v2) as unknown as Record<string, unknown>;
+    legacy.schemaVersion = 1;
+    const legacyModel = legacy.model as Record<string, unknown>;
+    legacyModel.schemaVersion = 1;
+    delete legacyModel.domains;
+    delete legacyModel.visualGroups;
+    const legacyMetrics = legacyModel.metrics as Record<string, Record<string, unknown>>;
+    for (const metric of Object.values(legacyMetrics)) {
+      delete metric.alias;
+      delete metric.domainIds;
+    }
+    const serializedLegacy = JSON.stringify(legacy);
+    const items = new Map<string, string>([[LEGACY_WORKSPACE_STORAGE_KEY, serializedLegacy]]);
+    const storage = {
+      get length() { return items.size; },
+      clear: () => items.clear(),
+      getItem: (key: string) => items.get(key) ?? null,
+      key: (index: number) => [...items.keys()][index] ?? null,
+      removeItem: (key: string) => { items.delete(key); },
+      setItem: (key: string, value: string) => { items.set(key, value); },
+    } satisfies Storage;
+
+    const loaded = loadWorkspace(storage);
+
+    expect(loaded.warning).toContain('schema v2');
+    expect(loaded.value.schemaVersion).toBe(2);
+    expect(loaded.value.model.metrics.sim_cost.alias).toBe('sim_cost');
+    expect(loaded.value.model.metrics.sim_cost.domainIds).toContain('fixed_costs');
+    expect(loaded.value.model.domains.fixed_costs.metricIds).toContain('sim_cost');
+    expect(storage.getItem(MIGRATION_BACKUP_KEY)).toBe(serializedLegacy);
+    expect(storage.getItem(WORKSPACE_STORAGE_KEY)).not.toBeNull();
   });
 });

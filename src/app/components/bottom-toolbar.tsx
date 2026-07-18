@@ -1,7 +1,9 @@
 import {
   Eye,
   Focus,
+  FolderTree,
   Hand,
+  Layers,
   LayoutGrid,
   Maximize2,
   Minimize2,
@@ -29,6 +31,11 @@ interface BottomToolbarProps {
   canUndo: boolean;
   canRedo: boolean;
   scale: number;
+  onToggleConnectionMode?: () => void;
+  connectionModeActive?: boolean;
+  onGroupSelected?: () => void;
+  canGroup?: boolean;
+  onManageDomains?: () => void;
 }
 
 export function BottomToolbar({
@@ -46,6 +53,11 @@ export function BottomToolbar({
   canUndo,
   canRedo,
   scale,
+  onToggleConnectionMode,
+  connectionModeActive = false,
+  onGroupSelected,
+  canGroup = false,
+  onManageDomains,
 }: BottomToolbarProps) {
   return (
     <div
@@ -57,7 +69,25 @@ export function BottomToolbar({
       <Divider />
       <ToolBtn icon={<MousePointer2 />} tooltip="Выделение: клик, Shift и рамка" active />
       <ToolBtn icon={<Hand />} tooltip="Панорамирование: средняя кнопка или колесо" />
-      <ToolBtn icon={<Spline />} tooltip="Расчётные связи выводятся из AST и не редактируются отдельно" disabled />
+      <ToolBtn
+        icon={<Spline />}
+        tooltip={onToggleConnectionMode ? 'Соединить метрики формулой' : 'Режим соединения пока недоступен'}
+        active={connectionModeActive}
+        onClick={onToggleConnectionMode}
+        disabled={!onToggleConnectionMode}
+      />
+      <ToolBtn
+        icon={<Layers />}
+        tooltip={canGroup ? 'Сгруппировать выбранные метрики (⌘G)' : 'Выберите несколько метрик для группировки'}
+        onClick={onGroupSelected}
+        disabled={!onGroupSelected || !canGroup}
+      />
+      <ToolBtn
+        icon={<FolderTree />}
+        tooltip="Управление смысловыми доменами"
+        onClick={onManageDomains}
+        disabled={!onManageDomains}
+      />
       <Divider />
       <ToolBtn icon={<Eye />} tooltip="What-if impact до North Star" active={impactActive} onClick={onToggleImpact} />
       <Divider />

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import fixture from './fixtures/tokberi-base-station.json';
 import { add, ref } from './ast';
-import { computeImpact, computeTokBeriThresholds } from './analysis';
+import { computeGraphFocus, computeImpact, computeTokBeriThresholds } from './analysis';
 import { evaluateModel } from './evaluator';
 import { validateModelDocument } from './schema';
 import { createWorkspaceDocument, importWorkspace, serializeWorkspace } from './storage';
@@ -50,6 +50,40 @@ describe('TokBeri reference model', () => {
     expect(thresholds.breakEven.value!).toBeGreaterThan(0);
     expect(thresholds.payback12.value!).toBeGreaterThan(0);
     expect(thresholds.payback24.value!).toBeLessThan(thresholds.payback12.value!);
+  });
+
+  it('builds structure, focus, multi-select and analysis connection states', () => {
+    const model = createTokBeriModel();
+
+    const structure = computeGraphFocus(model, []);
+    expect(structure.mode).toBe('structure');
+    expect(structure.backboneEdges.has('cash_contribution-profit_before_tax')).toBe(true);
+    expect(structure.backboneEdges.has('cash_contribution-payback_months')).toBe(false);
+
+    const focus = computeGraphFocus(model, ['cash_contribution']);
+    expect(focus.mode).toBe('focus');
+    expect(focus.upstreamEdges.has('rental_revenue-cash_contribution')).toBe(true);
+    expect(focus.downstreamEdges.has('cash_contribution-profit_before_tax')).toBe(true);
+
+    const influenceFocus = computeGraphFocus(model, ['potential_demand']);
+    expect(influenceFocus.directEdges.has('potential_demand-rentals_per_day')).toBe(true);
+
+    const multi = computeGraphFocus(model, ['rentals_per_day', 'profit_before_tax']);
+    expect(multi.mode).toBe('multi');
+    expect(multi.hasCalculationPath).toBe(true);
+    expect(multi.connectingEdges.has('successful_rentals-rental_revenue')).toBe(true);
+    expect(multi.connectingEdges.has('cash_contribution-profit_before_tax')).toBe(true);
+
+    const disconnected = computeGraphFocus(model, ['deposit_amount', 'profit_before_tax']);
+    expect(disconnected.hasCalculationPath).toBe(false);
+
+    const influenceOnly = computeGraphFocus(model, ['potential_demand', 'rentals_per_day']);
+    expect(influenceOnly.hasCalculationPath).toBe(false);
+    expect(influenceOnly.directEdges.has('potential_demand-rentals_per_day')).toBe(true);
+
+    const analysis = computeGraphFocus(model, [], 'rentals_per_day');
+    expect(analysis.mode).toBe('analysis');
+    expect(analysis.analysisEdges.has('cash_contribution-profit_before_tax')).toBe(true);
   });
 });
 

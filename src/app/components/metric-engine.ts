@@ -1,6 +1,13 @@
 export { createTokBeriModel as createDefaultModel } from '../../core/tokberi-template';
 export { evaluateModel as computeMetrics, getCalculationRelations, wouldCreateCycle } from '../../core/evaluator';
-export { computeImpact, computeTokBeriThresholds, downstreamEdgeKeys, solveThreshold } from '../../core/analysis';
+export {
+  computeGraphFocus,
+  computeImpact,
+  computeTokBeriThresholds,
+  downstreamEdgeKeys,
+  solveThreshold,
+} from '../../core/analysis';
+export type { GraphFocusMode, GraphFocusState } from '../../core/analysis';
 export { autoLayout, fmt } from '../../core/presentation';
 export { unitFromPreset } from '../../core/units';
 export type {

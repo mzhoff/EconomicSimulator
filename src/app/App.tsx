@@ -9,11 +9,12 @@ import {
 } from 'lucide-react';
 import {
   autoLayout,
+  computeGraphFocus,
   computeImpact,
   computeTokBeriThresholds,
-  downstreamEdgeKeys,
   getCalculationRelations,
   unitFromPreset,
+  type Edge,
   type MetricDef,
   type ModelState,
   type Shock,
@@ -34,6 +35,7 @@ import { InspectorPanel } from './components/inspector-panel';
 import { BottomToolbar } from './components/bottom-toolbar';
 import { InfiniteCanvas, useCanvasControls, type CanvasPoint } from './components/infinite-canvas';
 import { MetricCatalogDialog, type CustomMetricDraft } from './components/metric-catalog-dialog';
+import { GraphModeIndicator } from './components/graph-mode-indicator';
 
 const MIN_CONTENT_WIDTH = 2700;
 const MIN_CONTENT_HEIGHT = 2250;
@@ -80,7 +82,7 @@ export default function App() {
   const model = history.present;
   const [scenarioId, setScenarioId] = useState(loaded.value.activeScenarioId);
   const [inputOverridesByScenario, setInputOverridesByScenario] = useState(loaded.value.inputOverridesByScenario);
-  const [selectedIds, setSelectedIds] = useState<string[]>(() => [loaded.value.model.activeNorthStarId]);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [impactActive, setImpactActive] = useState(false);
   const [shock, setShock] = useState<Shock>({ kind: 'relative', amount: 0.1 });
   const [leftOpen, setLeftOpen] = useState(true);
@@ -90,6 +92,7 @@ export default function App() {
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [notice, setNotice] = useState<string | null>(loaded.warning ?? null);
   const [saveState, setSaveState] = useState<'saved' | 'saving' | 'error'>('saved');
+  const [hoveredEdge, setHoveredEdge] = useState<Edge | null>(null);
 
   const { transform, setTransform, zoomIn, zoomOut, fitToView } = useCanvasControls(loaded.value.viewport);
   const canvasAreaRef = useRef<HTMLDivElement>(null);
@@ -129,10 +132,11 @@ export default function App() {
     () => [...calculationRelations, ...model.influenceRelations],
     [calculationRelations, model.influenceRelations],
   );
-  const highlightedEdges = useMemo(
-    () => impactActive && impact ? downstreamEdgeKeys(model, impact.inputId) : new Set<string>(),
-    [impact, impactActive, model],
+  const graphFocus = useMemo(
+    () => computeGraphFocus(model, selectedIds, impactActive && impact ? impact.inputId : undefined),
+    [impact, impactActive, model, selectedIds],
   );
+  const hoveredEdgeKey = hoveredEdge ? `${hoveredEdge.from}-${hoveredEdge.to}` : null;
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
   const primarySelectedId = selectedIds[selectedIds.length - 1] ?? model.activeNorthStarId;
   const allCollapsed = !leftOpen && !rightOpen;
@@ -502,7 +506,9 @@ export default function App() {
     setScenarioId(workspace.activeScenarioId);
     setInputOverridesByScenario(workspace.inputOverridesByScenario);
     setTransform(workspace.viewport);
-    setSelectedIds([workspace.model.activeNorthStarId]);
+    setSelectedIds([]);
+    setImpactActive(false);
+    setHoveredEdge(null);
     setNotice('Модель импортирована и прошла проверку схемы, единиц и DAG.');
   }, [setTransform]);
 
@@ -588,14 +594,18 @@ export default function App() {
           <CanvasEdges
             edges={allEdges}
             metrics={evaluation.metrics}
-            highlightedEdges={highlightedEdges}
-            impactActive={impactActive}
+            focus={graphFocus}
+            impactDeltas={impactActive ? impact?.deltas : undefined}
+            scale={transform.scale}
+            hoveredEdgeKey={hoveredEdgeKey}
+            onHoveredEdgeChange={setHoveredEdge}
           />
           {Object.values(evaluation.metrics).map((metric) => (
             <MetricCard
               key={metric.id}
               metric={metric}
               selected={selectedSet.has(metric.id)}
+              relationHovered={hoveredEdge?.from === metric.id || hoveredEdge?.to === metric.id}
               onSelect={selectMetric}
               onDelete={handleDeleteMetric}
               onStartDrag={handleStartDrag}
@@ -616,6 +626,8 @@ export default function App() {
             />
           )}
         </InfiniteCanvas>
+
+        <GraphModeIndicator focus={graphFocus} selectedCount={selectedIds.length} />
 
         <InputPanel
           metrics={evaluation.metrics}
@@ -665,7 +677,7 @@ export default function App() {
           <button
             data-canvas-interactive="true"
             onClick={() => setNotice(null)}
-            className="absolute top-[0.75rem] left-1/2 -translate-x-1/2 z-40 max-w-[34rem] rounded-[var(--radius-lg)] border border-border bg-card px-[0.75rem] py-[0.5rem] text-left text-[0.6875rem] text-foreground shadow-lg cursor-pointer"
+            className="absolute top-[3.75rem] left-1/2 -translate-x-1/2 z-40 max-w-[34rem] rounded-[var(--radius-lg)] border border-border bg-card px-[0.75rem] py-[0.5rem] text-left text-[0.6875rem] text-foreground shadow-lg cursor-pointer"
             title="Закрыть"
           >
             {notice}

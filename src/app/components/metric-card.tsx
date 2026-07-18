@@ -33,6 +33,7 @@ const statusColors: Record<string, string> = {
 interface MetricCardProps {
   metric: MetricDef;
   selected: boolean;
+  relationHovered?: boolean;
   onSelect: (id: string, additive: boolean) => void;
   onDelete?: (id: string) => void;
   onStartDrag?: (id: string, event: React.PointerEvent) => void;
@@ -44,6 +45,7 @@ interface MetricCardProps {
 export function MetricCard({
   metric,
   selected,
+  relationHovered = false,
   onSelect,
   onDelete,
   onStartDrag,
@@ -94,6 +96,7 @@ export function MetricCard({
   return (
     <div
       data-canvas-interactive="true"
+      data-metric-id={metric.id}
       className="absolute select-none"
       style={{ left: metric.position.x, top: metric.position.y, width: '17rem', zIndex: selected ? 10 : 1 }}
       onPointerDown={handlePointerDown}
@@ -109,6 +112,8 @@ export function MetricCard({
         className={`rounded-[var(--radius-xl)] border p-[0.875rem] transition-all duration-150 cursor-pointer group ${
           selected
             ? 'border-primary bg-card shadow-[0_0_0_2px_var(--primary)]'
+            : relationHovered
+              ? 'border-sky-400 bg-card shadow-[0_0_0_2px_rgba(14,165,233,0.22)]'
             : `${statusColors[metric.validationStatus] ?? 'border-border'} bg-card hover:border-muted-foreground/30 hover:shadow-md`
         }`}
       >

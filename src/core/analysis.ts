@@ -1,6 +1,159 @@
 import { evaluateModel, getCalculationRelations } from './evaluator';
 import type { ImpactResult, ModelState, Shock, ThresholdResult } from './model';
 
+export type GraphFocusMode = 'structure' | 'focus' | 'multi' | 'analysis';
+
+export interface GraphFocusState {
+  mode: GraphFocusMode;
+  selectedNodeIds: Set<string>;
+  backboneEdges: Set<string>;
+  upstreamEdges: Set<string>;
+  downstreamEdges: Set<string>;
+  connectingEdges: Set<string>;
+  directEdges: Set<string>;
+  analysisEdges: Set<string>;
+  relevantEdges: Set<string>;
+  hasCalculationPath: boolean;
+}
+
+const relationKey = (from: string, to: string): string => `${from}-${to}`;
+
+function addToIndex(index: Map<string, string[]>, from: string, to: string): void {
+  const neighbours = index.get(from) ?? [];
+  neighbours.push(to);
+  index.set(from, neighbours);
+}
+
+function reachableNodes(startId: string, adjacency: Map<string, string[]>): Set<string> {
+  const visited = new Set<string>([startId]);
+  const queue = [startId];
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    for (const next of adjacency.get(current) ?? []) {
+      if (visited.has(next)) continue;
+      visited.add(next);
+      queue.push(next);
+    }
+  }
+  return visited;
+}
+
+function traversedEdgeKeys(startId: string, adjacency: Map<string, string[]>): Set<string> {
+  const edges = new Set<string>();
+  const visited = new Set<string>([startId]);
+  const queue = [startId];
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    for (const next of adjacency.get(current) ?? []) {
+      edges.add(relationKey(current, next));
+      if (visited.has(next)) continue;
+      visited.add(next);
+      queue.push(next);
+    }
+  }
+  return edges;
+}
+
+export function computeGraphFocus(
+  model: ModelState,
+  selectedIds: string[],
+  analysisSourceId?: string,
+): GraphFocusState {
+  const calculationRelations = getCalculationRelations(model);
+  const adjacency = new Map<string, string[]>();
+  const reverseAdjacency = new Map<string, string[]>();
+  for (const relation of calculationRelations) {
+    addToIndex(adjacency, relation.from, relation.to);
+    addToIndex(reverseAdjacency, relation.to, relation.from);
+  }
+
+  const backboneEdges = new Set<string>();
+  const northStarAncestors = reachableNodes(model.activeNorthStarId, reverseAdjacency);
+  for (const relation of calculationRelations) {
+    if (northStarAncestors.has(relation.from) && northStarAncestors.has(relation.to)) {
+      backboneEdges.add(relationKey(relation.from, relation.to));
+    }
+  }
+
+  const selectedNodeIds = new Set(selectedIds);
+  const upstreamEdges = new Set<string>();
+  const downstreamEdges = new Set<string>();
+  const connectingEdges = new Set<string>();
+  const directEdges = new Set<string>();
+  const analysisEdges = analysisSourceId ? traversedEdgeKeys(analysisSourceId, adjacency) : new Set<string>();
+
+  if (selectedIds.length === 1) {
+    const selectedId = selectedIds[0];
+    const upstreamNodes = reachableNodes(selectedId, reverseAdjacency);
+    const downstreamNodes = reachableNodes(selectedId, adjacency);
+    for (const relation of calculationRelations) {
+      if (upstreamNodes.has(relation.from) && upstreamNodes.has(relation.to)) {
+        upstreamEdges.add(relationKey(relation.from, relation.to));
+      }
+      if (downstreamNodes.has(relation.from) && downstreamNodes.has(relation.to)) {
+        downstreamEdges.add(relationKey(relation.from, relation.to));
+      }
+    }
+    for (const relation of [...calculationRelations, ...model.influenceRelations]) {
+      if (relation.from === selectedId || relation.to === selectedId) {
+        directEdges.add(relationKey(relation.from, relation.to));
+      }
+    }
+  }
+
+  if (selectedIds.length > 1) {
+    for (const sourceId of selectedIds) {
+      const forward = reachableNodes(sourceId, adjacency);
+      for (const targetId of selectedIds) {
+        if (sourceId === targetId || !forward.has(targetId)) continue;
+        const targetAncestors = reachableNodes(targetId, reverseAdjacency);
+        for (const relation of calculationRelations) {
+          if (forward.has(relation.from) && targetAncestors.has(relation.to)) {
+            connectingEdges.add(relationKey(relation.from, relation.to));
+          }
+        }
+      }
+    }
+    for (const relation of [...calculationRelations, ...model.influenceRelations]) {
+      if (selectedNodeIds.has(relation.from) && selectedNodeIds.has(relation.to)) {
+        directEdges.add(relationKey(relation.from, relation.to));
+      }
+    }
+  }
+
+  const mode: GraphFocusMode = analysisSourceId
+    ? 'analysis'
+    : selectedIds.length === 0
+      ? 'structure'
+      : selectedIds.length === 1
+        ? 'focus'
+        : 'multi';
+  const relevantEdges = new Set<string>();
+  const activeSets = mode === 'analysis'
+    ? [analysisEdges]
+    : mode === 'focus'
+      ? [upstreamEdges, downstreamEdges, directEdges]
+      : mode === 'multi'
+        ? [connectingEdges, directEdges]
+        : [backboneEdges];
+  for (const set of activeSets) {
+    for (const key of set) relevantEdges.add(key);
+  }
+
+  return {
+    mode,
+    selectedNodeIds,
+    backboneEdges,
+    upstreamEdges,
+    downstreamEdges,
+    connectingEdges,
+    directEdges,
+    analysisEdges,
+    relevantEdges,
+    hasCalculationPath: selectedIds.length < 2 || connectingEdges.size > 0,
+  };
+}
+
 function applyShock(value: number, shock: Shock): number {
   if (shock.kind === 'relative') return value * (1 + shock.amount);
   return value + shock.amount;

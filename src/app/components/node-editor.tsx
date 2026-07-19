@@ -147,266 +147,282 @@ export function NodeEditor({
   };
 
   return (
-    <aside
+    <div
       data-canvas-interactive="true"
-      aria-label={mode === 'create' ? 'Создание метрики' : 'Редактирование метрики'}
-      className="absolute inset-y-0 right-0 z-40 flex w-[25rem] max-w-[calc(100vw-1rem)] flex-col border-l border-border bg-card/98 shadow-2xl backdrop-blur-sm"
-      onPointerDown={(event) => event.stopPropagation()}
+      className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/20 p-[1rem] backdrop-blur-[1px]"
+      onPointerDown={(event) => {
+        event.stopPropagation();
+        if (event.target === event.currentTarget) onCancel();
+      }}
     >
-      <header className="flex items-start justify-between gap-[1rem] border-b border-border px-[1.25rem] py-[1rem]">
-        <div>
-          <h2 className="text-[0.9375rem] text-foreground" style={{ fontWeight: 650 }}>
-            {mode === 'create' ? 'Новая метрика' : 'Свойства метрики'}
-          </h2>
-          <p className="mt-[0.125rem] text-[0.6875rem] text-muted-foreground">
-            Один узел, один alias и понятные пределы моделирования.
-          </p>
-        </div>
-        <button
-          type="button"
-          aria-label="Закрыть редактор"
-          onClick={onCancel}
-          className="flex size-[2rem] shrink-0 items-center justify-center rounded-[var(--radius-md)] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground cursor-pointer"
-        >
-          <X className="size-[1rem]" />
-        </button>
-      </header>
-
-      <form
-        className="flex min-h-0 flex-1 flex-col"
-        onSubmit={handleSubmit}
-        onKeyDown={(event) => {
-          if (event.key === 'Escape') {
-            event.preventDefault();
-            onCancel();
-          }
-        }}
+      <section
+        role="dialog"
+        aria-modal="true"
+        aria-label={mode === 'create' ? 'Создание метрики' : 'Редактирование метрики'}
+        className="flex max-h-[calc(100vh-2rem)] w-[min(54rem,calc(100vw-2rem))] flex-col overflow-hidden rounded-[var(--radius-xl)] border border-border bg-card shadow-2xl"
+        onPointerDown={(event) => event.stopPropagation()}
       >
-        <div className="flex-1 space-y-[1rem] overflow-y-auto px-[1.25rem] py-[1rem]">
-          <fieldset>
-            <legend className="mb-[0.5rem] text-[0.6875rem] text-muted-foreground">
-              Тип метрики
-            </legend>
-            <div className="grid grid-cols-2 gap-[0.5rem]">
-              {BEHAVIOR_OPTIONS.map((option) => (
-                <button
-                  key={option.value}
-                  type="button"
-                  aria-pressed={draft.behavior === option.value}
-                  onClick={() => update('behavior', option.value)}
-                  className={`flex min-h-[6.25rem] flex-col items-center justify-between rounded-[var(--radius-lg)] border p-[0.625rem] text-center transition-all cursor-pointer ${
-                    draft.behavior === option.value
-                      ? 'border-primary bg-primary/[0.04] shadow-[0_0_0_1px_var(--primary)]'
-                      : 'border-border hover:border-muted-foreground/40 hover:bg-accent/50'
-                  }`}
-                >
-                  <BehaviorShape behavior={option.value} selected={draft.behavior === option.value} />
-                  <span>
-                    <span className="block text-[0.75rem] text-foreground" style={{ fontWeight: 650 }}>
-                      {option.label}
-                    </span>
-                    <span className="mt-[0.0625rem] block text-[0.5625rem] leading-[1.3] text-muted-foreground">
-                      {option.description}
-                    </span>
-                  </span>
-                </button>
-              ))}
-            </div>
-          </fieldset>
-
-          <Field label="Название" required>
-            <input
-              autoFocus={mode === 'create'}
-              value={draft.name}
-              onChange={(event) => update('name', event.target.value)}
-              placeholder="Например, Средний чек"
-              className="field-input"
-            />
-          </Field>
-
-          <Field
-            label="Технический alias"
-            required
-            hint="Используется в формулах и остаётся уникальным внутри модели."
-            error={aliasError ?? localAliasError}
-          >
-            <div className="flex gap-[0.375rem]">
-              <input
-                value={draft.alias}
-                onChange={(event) => update('alias', event.target.value.toLowerCase())}
-                placeholder="average_check"
-                spellCheck={false}
-                autoCapitalize="none"
-                className="field-input font-mono"
-              />
-              <button
-                type="button"
-                title="Сформировать alias из названия"
-                aria-label="Сформировать alias из названия"
-                onClick={() => update('alias', toMetricAlias(draft.name))}
-                disabled={!draft.name.trim()}
-                className="flex size-[2.375rem] shrink-0 items-center justify-center rounded-[var(--radius-md)] border border-border text-muted-foreground transition-colors hover:border-muted-foreground/40 hover:text-foreground disabled:opacity-40 cursor-pointer"
-              >
-                <Sparkles className="size-[0.875rem]" />
-              </button>
-            </div>
-          </Field>
-
-          <div className="grid grid-cols-2 gap-[0.75rem]">
-            <Field label="Единица измерения" required>
-              <select
-                value={draft.unitPreset}
-                onChange={(event) => update('unitPreset', event.target.value)}
-                className="field-input cursor-pointer"
-              >
-                {unitOptions.map((option) => (
-                  <option key={option.value} value={option.value}>{option.label}</option>
-                ))}
-              </select>
-            </Field>
-            {draft.valueMode === 'manual' ? (
-              <Field label="Текущее значение" required>
-                <NumberInput value={draft.value} onChange={(value) => update('value', value)} />
-              </Field>
-            ) : (
-              <div className="rounded-[var(--radius-lg)] border border-violet-200 bg-violet-50/60 px-[0.75rem] py-[0.5rem]">
-                <div className="text-[0.625rem] text-violet-700">Рассчитывается</div>
-                <div className="mt-[0.125rem] truncate font-mono text-[0.6875rem] text-violet-950">
-                  {draft.formulaSource || 'Формула не задана'}
-                </div>
-              </div>
-            )}
+        <header className="flex items-start justify-between gap-[1rem] border-b border-border px-[1.25rem] py-[0.875rem]">
+          <div>
+            <h2 className="text-[0.9375rem] text-foreground" style={{ fontWeight: 650 }}>
+              {mode === 'create' ? 'Новая метрика' : 'Свойства метрики'}
+            </h2>
+            <p className="mt-[0.125rem] text-[0.6875rem] text-muted-foreground">
+              Один узел, один alias и понятные пределы моделирования.
+            </p>
           </div>
-
-          <fieldset>
-            <legend className="mb-[0.375rem] text-[0.6875rem] text-muted-foreground">
-              Значение
-            </legend>
-            <div className="grid grid-cols-2 gap-[0.375rem] rounded-[var(--radius-lg)] bg-secondary p-[0.25rem]">
-              <ValueModeButton
-                active={draft.valueMode === 'manual'}
-                icon={<Check className="size-[0.75rem]" />}
-                label="Ввод вручную"
-                onClick={() => update('valueMode', 'manual')}
-              />
-              <ValueModeButton
-                active={draft.valueMode === 'formula'}
-                icon={<Braces className="size-[0.75rem]" />}
-                label="Формула"
-                onClick={() => {
-                  update('valueMode', 'formula');
-                  onOpenFormula?.();
-                }}
-              />
-            </div>
-          </fieldset>
-
-          {draft.valueMode === 'manual' ? (
-            <div>
-              <div className="grid grid-cols-2 gap-[0.75rem]">
-                <Field label="Минимум" required>
-                  <NumberInput value={draft.min} onChange={(value) => update('min', value)} />
-                </Field>
-                <Field label="Максимум" required>
-                  <NumberInput value={draft.max} onChange={(value) => update('max', value)} />
-                </Field>
-              </div>
-              {rangeError ? <p className="mt-[0.25rem] text-[0.625rem] text-red-600">{rangeError}</p> : null}
-            </div>
-          ) : (
-            <button
-              type="button"
-              onClick={onOpenFormula}
-              className="flex w-full items-center justify-between rounded-[var(--radius-lg)] border border-violet-200 bg-violet-50/50 px-[0.75rem] py-[0.625rem] text-left transition-colors hover:bg-violet-50 cursor-pointer"
-            >
-              <span>
-                <span className="block text-[0.75rem] text-violet-950" style={{ fontWeight: 600 }}>
-                  Открыть Formula Composer
-                </span>
-                <span className="block text-[0.625rem] text-violet-700">
-                  Формула создаст Calculation-связи автоматически
-                </span>
-              </span>
-              <Braces className="size-[1rem] text-violet-600" />
-            </button>
-          )}
-
-          <Field label="Домены" hint="Метрика может находиться сразу в нескольких смысловых доменах.">
-            <div className="flex flex-wrap gap-[0.375rem]">
-              {domains.map((domain) => {
-                const selected = draft.domainIds.includes(domain.id);
-                return (
-                  <button
-                    key={domain.id}
-                    type="button"
-                    aria-pressed={selected}
-                    onClick={() => toggleDomain(domain.id)}
-                    className={`flex items-center gap-[0.3125rem] rounded-full border px-[0.5rem] py-[0.25rem] text-[0.625rem] transition-all cursor-pointer ${
-                      selected
-                        ? 'border-primary bg-primary text-primary-foreground'
-                        : 'border-border bg-card text-muted-foreground hover:border-muted-foreground/40 hover:text-foreground'
-                    }`}
-                  >
-                    {domain.color ? (
-                      <span
-                        className="size-[0.4375rem] rounded-full border border-black/10"
-                        style={{ backgroundColor: domain.color }}
-                      />
-                    ) : null}
-                    {domain.name}
-                    {selected ? <Check className="size-[0.625rem]" /> : null}
-                  </button>
-                );
-              })}
-              {onCreateDomain ? (
-                <button
-                  type="button"
-                  onClick={onCreateDomain}
-                  className="flex items-center gap-[0.25rem] rounded-full border border-dashed border-border px-[0.5rem] py-[0.25rem] text-[0.625rem] text-muted-foreground transition-colors hover:border-muted-foreground/50 hover:text-foreground cursor-pointer"
-                >
-                  <Plus className="size-[0.625rem]" />
-                  Новый домен
-                </button>
-              ) : null}
-            </div>
-          </Field>
-
-          <Field label="Описание" hint="Необязательно. Коротко объясните смысл метрики.">
-            <textarea
-              value={draft.description}
-              onChange={(event) => update('description', event.target.value)}
-              rows={3}
-              placeholder="Что измеряет эта метрика?"
-              className="field-input resize-none"
-            />
-          </Field>
-
-          {formError ? (
-            <div role="alert" className="rounded-[var(--radius-lg)] border border-red-200 bg-red-50 px-[0.75rem] py-[0.625rem] text-[0.6875rem] text-red-700">
-              {formError}
-            </div>
-          ) : null}
-        </div>
-
-        <footer className="flex items-center justify-end gap-[0.5rem] border-t border-border px-[1.25rem] py-[0.875rem]">
           <button
             type="button"
+            aria-label="Закрыть редактор"
             onClick={onCancel}
-            className="rounded-[var(--radius-lg)] border border-border px-[0.875rem] py-[0.5rem] text-[0.75rem] text-muted-foreground transition-colors hover:text-foreground cursor-pointer"
+            className="flex size-[2rem] shrink-0 items-center justify-center rounded-[var(--radius-md)] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground cursor-pointer"
           >
-            Отмена
+            <X className="size-[1rem]" />
           </button>
-          <button
-            type="submit"
-            disabled={!canSave}
-            className="rounded-[var(--radius-lg)] bg-primary px-[1rem] py-[0.5rem] text-[0.75rem] text-primary-foreground transition-opacity disabled:cursor-not-allowed disabled:opacity-40 cursor-pointer"
-            style={{ fontWeight: 600 }}
-          >
-            {saving ? 'Сохраняю…' : mode === 'create' ? 'Создать метрику' : 'Сохранить'}
-          </button>
-        </footer>
-      </form>
-    </aside>
+        </header>
+
+        <form
+          className="flex min-h-0 flex-1 flex-col"
+          onSubmit={handleSubmit}
+          onKeyDown={(event) => {
+            if (event.key === 'Escape') {
+              event.preventDefault();
+              onCancel();
+            }
+          }}
+        >
+          <div className="min-h-0 flex-1 overflow-y-auto px-[1.25rem] py-[1rem]">
+            <fieldset>
+              <legend className="mb-[0.5rem] text-[0.6875rem] text-muted-foreground">
+                Тип метрики
+              </legend>
+              <div className="grid grid-cols-2 gap-[0.5rem] sm:grid-cols-4">
+                {BEHAVIOR_OPTIONS.map((option) => (
+                  <button
+                    key={option.value}
+                    type="button"
+                    aria-pressed={draft.behavior === option.value}
+                    onClick={() => update('behavior', option.value)}
+                    className={`flex min-h-[5.25rem] flex-col items-center justify-between rounded-[var(--radius-lg)] border p-[0.625rem] text-center transition-all cursor-pointer ${
+                      draft.behavior === option.value
+                        ? 'border-primary bg-primary/[0.04] shadow-[0_0_0_1px_var(--primary)]'
+                        : 'border-border hover:border-muted-foreground/40 hover:bg-accent/50'
+                    }`}
+                  >
+                    <BehaviorShape behavior={option.value} selected={draft.behavior === option.value} />
+                    <span>
+                      <span className="block text-[0.75rem] text-foreground" style={{ fontWeight: 650 }}>
+                        {option.label}
+                      </span>
+                      <span className="mt-[0.0625rem] block text-[0.5625rem] leading-[1.3] text-muted-foreground">
+                        {option.description}
+                      </span>
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </fieldset>
+
+            <div className="mt-[1rem] grid gap-[1rem] md:grid-cols-2">
+              <div className="space-y-[1rem]">
+                <Field label="Название" required>
+                  <input
+                    autoFocus={mode === 'create'}
+                    value={draft.name}
+                    onChange={(event) => update('name', event.target.value)}
+                    placeholder="Например, Средний чек"
+                    className="field-input"
+                  />
+                </Field>
+
+                <Field
+                  label="Технический alias"
+                  required
+                  hint="Используется в формулах и остаётся уникальным внутри модели."
+                  error={aliasError ?? localAliasError}
+                >
+                  <div className="flex gap-[0.375rem]">
+                    <input
+                      value={draft.alias}
+                      onChange={(event) => update('alias', event.target.value.toLowerCase())}
+                      placeholder="average_check"
+                      spellCheck={false}
+                      autoCapitalize="none"
+                      className="field-input font-mono"
+                    />
+                    <button
+                      type="button"
+                      title="Сформировать alias из названия"
+                      aria-label="Сформировать alias из названия"
+                      onClick={() => update('alias', toMetricAlias(draft.name))}
+                      disabled={!draft.name.trim()}
+                      className="flex size-[2.375rem] shrink-0 items-center justify-center rounded-[var(--radius-md)] border border-border text-muted-foreground transition-colors hover:border-muted-foreground/40 hover:text-foreground disabled:opacity-40 cursor-pointer"
+                    >
+                      <Sparkles className="size-[0.875rem]" />
+                    </button>
+                  </div>
+                </Field>
+
+                <div className="grid grid-cols-2 gap-[0.75rem]">
+                  <Field label="Единица измерения" required>
+                    <select
+                      value={draft.unitPreset}
+                      onChange={(event) => update('unitPreset', event.target.value)}
+                      className="field-input cursor-pointer"
+                    >
+                      {unitOptions.map((option) => (
+                        <option key={option.value} value={option.value}>{option.label}</option>
+                      ))}
+                    </select>
+                  </Field>
+                  {draft.valueMode === 'manual' ? (
+                    <Field label="Текущее значение" required>
+                      <NumberInput value={draft.value} onChange={(value) => update('value', value)} />
+                    </Field>
+                  ) : (
+                    <div className="rounded-[var(--radius-lg)] border border-violet-200 bg-violet-50/60 px-[0.75rem] py-[0.5rem]">
+                      <div className="text-[0.625rem] text-violet-700">Рассчитывается</div>
+                      <div className="mt-[0.125rem] truncate font-mono text-[0.6875rem] text-violet-950">
+                        {draft.formulaSource || 'Формула не задана'}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <fieldset>
+                  <legend className="mb-[0.375rem] text-[0.6875rem] text-muted-foreground">
+                    Значение
+                  </legend>
+                  <div className="grid grid-cols-2 gap-[0.375rem] rounded-[var(--radius-lg)] bg-secondary p-[0.25rem]">
+                    <ValueModeButton
+                      active={draft.valueMode === 'manual'}
+                      icon={<Check className="size-[0.75rem]" />}
+                      label="Ввод вручную"
+                      onClick={() => update('valueMode', 'manual')}
+                    />
+                    <ValueModeButton
+                      active={draft.valueMode === 'formula'}
+                      icon={<Braces className="size-[0.75rem]" />}
+                      label="Формула"
+                      onClick={() => {
+                        update('valueMode', 'formula');
+                        onOpenFormula?.();
+                      }}
+                    />
+                  </div>
+                </fieldset>
+
+                {draft.valueMode === 'manual' ? (
+                  <div>
+                    <div className="grid grid-cols-2 gap-[0.75rem]">
+                      <Field label="Минимум" required>
+                        <NumberInput value={draft.min} onChange={(value) => update('min', value)} />
+                      </Field>
+                      <Field label="Максимум" required>
+                        <NumberInput value={draft.max} onChange={(value) => update('max', value)} />
+                      </Field>
+                    </div>
+                    {rangeError ? <p className="mt-[0.25rem] text-[0.625rem] text-red-600">{rangeError}</p> : null}
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={onOpenFormula}
+                    className="flex w-full items-center justify-between rounded-[var(--radius-lg)] border border-violet-200 bg-violet-50/50 px-[0.75rem] py-[0.625rem] text-left transition-colors hover:bg-violet-50 cursor-pointer"
+                  >
+                    <span>
+                      <span className="block text-[0.75rem] text-violet-950" style={{ fontWeight: 600 }}>
+                        Открыть Formula Composer
+                      </span>
+                      <span className="block text-[0.625rem] text-violet-700">
+                        Формула создаст Calculation-связи автоматически
+                      </span>
+                    </span>
+                    <Braces className="size-[1rem] text-violet-600" />
+                  </button>
+                )}
+              </div>
+
+              <div className="space-y-[1rem]">
+                <Field label="Домены" hint="Метрика может находиться сразу в нескольких смысловых доменах.">
+                  <div className="flex flex-wrap gap-[0.375rem]">
+                    {domains.map((domain) => {
+                      const selected = draft.domainIds.includes(domain.id);
+                      return (
+                        <button
+                          key={domain.id}
+                          type="button"
+                          aria-pressed={selected}
+                          onClick={() => toggleDomain(domain.id)}
+                          className={`flex items-center gap-[0.3125rem] rounded-full border px-[0.5rem] py-[0.25rem] text-[0.625rem] transition-all cursor-pointer ${
+                            selected
+                              ? 'border-primary bg-primary text-primary-foreground'
+                              : 'border-border bg-card text-muted-foreground hover:border-muted-foreground/40 hover:text-foreground'
+                          }`}
+                        >
+                          {domain.color ? (
+                            <span
+                              className="size-[0.4375rem] rounded-full border border-black/10"
+                              style={{ backgroundColor: domain.color }}
+                            />
+                          ) : null}
+                          {domain.name}
+                          {selected ? <Check className="size-[0.625rem]" /> : null}
+                        </button>
+                      );
+                    })}
+                    {onCreateDomain ? (
+                      <button
+                        type="button"
+                        onClick={onCreateDomain}
+                        className="flex items-center gap-[0.25rem] rounded-full border border-dashed border-border px-[0.5rem] py-[0.25rem] text-[0.625rem] text-muted-foreground transition-colors hover:border-muted-foreground/50 hover:text-foreground cursor-pointer"
+                      >
+                        <Plus className="size-[0.625rem]" />
+                        Новый домен
+                      </button>
+                    ) : null}
+                  </div>
+                </Field>
+
+                <Field label="Описание" hint="Необязательно. Коротко объясните смысл метрики.">
+                  <textarea
+                    value={draft.description}
+                    onChange={(event) => update('description', event.target.value)}
+                    rows={5}
+                    placeholder="Что измеряет эта метрика?"
+                    className="field-input resize-none"
+                  />
+                </Field>
+
+                {formError ? (
+                  <div role="alert" className="rounded-[var(--radius-lg)] border border-red-200 bg-red-50 px-[0.75rem] py-[0.625rem] text-[0.6875rem] text-red-700">
+                    {formError}
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          </div>
+
+          <footer className="flex items-center justify-end gap-[0.5rem] border-t border-border px-[1.25rem] py-[0.875rem]">
+            <button
+              type="button"
+              onClick={onCancel}
+              className="rounded-[var(--radius-lg)] border border-border px-[0.875rem] py-[0.5rem] text-[0.75rem] text-muted-foreground transition-colors hover:text-foreground cursor-pointer"
+            >
+              Отмена
+            </button>
+            <button
+              type="submit"
+              disabled={!canSave}
+              className="rounded-[var(--radius-lg)] bg-primary px-[1rem] py-[0.5rem] text-[0.75rem] text-primary-foreground transition-opacity disabled:cursor-not-allowed disabled:opacity-40 cursor-pointer"
+              style={{ fontWeight: 600 }}
+            >
+              {saving ? 'Сохраняю…' : mode === 'create' ? 'Создать метрику' : 'Сохранить'}
+            </button>
+          </footer>
+        </form>
+      </section>
+    </div>
   );
 }
 

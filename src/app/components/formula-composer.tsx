@@ -111,7 +111,7 @@ export function FormulaComposer({
       role="dialog"
       aria-modal="true"
       aria-label={`Формула метрики «${metricName}»`}
-      className="absolute bottom-[1rem] left-1/2 z-50 w-[min(48rem,calc(100vw-2rem))] -translate-x-1/2 overflow-hidden rounded-[var(--radius-xl)] border border-border bg-card shadow-2xl"
+      className="absolute bottom-[1rem] left-1/2 z-[90] w-[min(48rem,calc(100vw-2rem))] -translate-x-1/2 overflow-hidden rounded-[var(--radius-xl)] border border-border bg-card shadow-2xl"
       onPointerDown={(event) => event.stopPropagation()}
     >
       <header className="flex items-start justify-between gap-[1rem] border-b border-border px-[1rem] py-[0.75rem]">

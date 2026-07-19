@@ -81,10 +81,14 @@ import {
   VisualGroupDialog,
   type VisualGroupDraft,
 } from './components/visual-group-dialog';
+import { CanvasContextMenu } from './components/canvas-context-menu';
 
 const MIN_CONTENT_WIDTH = 1200;
 const MIN_CONTENT_HEIGHT = 800;
 const HISTORY_LIMIT = 50;
+const CANVAS_MENU_WIDTH = 208;
+const CANVAS_MENU_HEIGHT = 44;
+const CANVAS_MENU_EDGE_GAP = 8;
 
 interface HistoryState {
   past: ModelState[];
@@ -117,9 +121,16 @@ interface GroupMenuState {
   y: number;
 }
 
+interface CanvasMenuState {
+  x: number;
+  y: number;
+  point: CanvasPoint;
+}
+
 interface EditorState {
   mode: 'create' | 'edit';
   metricId?: string;
+  createAt?: CanvasPoint;
   draft: MetricNodeDraft;
 }
 
@@ -266,6 +277,7 @@ export default function App() {
   const [selectionRect, setSelectionRect] = useState<SelectionRect | null>(null);
   const [metricMenu, setMetricMenu] = useState<MetricMenuState | null>(null);
   const [groupMenu, setGroupMenu] = useState<GroupMenuState | null>(null);
+  const [canvasMenu, setCanvasMenu] = useState<CanvasMenuState | null>(null);
   const [notice, setNotice] = useState<string | null>(initial.warning);
   const [saveState, setSaveState] = useState<'saved' | 'saving' | 'error'>('saved');
   const [hoveredEdge, setHoveredEdge] = useState<Edge | null>(null);
@@ -461,14 +473,22 @@ export default function App() {
   }, [redo, selectedIds.length, undo]);
 
   useEffect(() => {
-    if (!metricMenu && !groupMenu) return;
+    if (!metricMenu && !groupMenu && !canvasMenu) return;
     const close = () => {
       setMetricMenu(null);
       setGroupMenu(null);
+      setCanvasMenu(null);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') close();
     };
     window.addEventListener('pointerdown', close);
-    return () => window.removeEventListener('pointerdown', close);
-  }, [groupMenu, metricMenu]);
+    window.addEventListener('keydown', closeOnEscape);
+    return () => {
+      window.removeEventListener('pointerdown', close);
+      window.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [canvasMenu, groupMenu, metricMenu]);
 
   const selectMetric = useCallback((id: string, additive = false) => {
     setSelectedGroupId(null);
@@ -621,10 +641,11 @@ export default function App() {
     setMetricMenu(null);
   }, [calculationRelations, commitModel, model.metrics]);
 
-  const openCreateEditor = useCallback(() => {
-    setEditor({ mode: 'create', draft: defaultMetricDraft() });
+  const openCreateEditor = useCallback((createAt?: CanvasPoint) => {
+    setEditor({ mode: 'create', createAt, draft: defaultMetricDraft() });
     setFormulaOpen(false);
     setEditorError(null);
+    setCanvasMenu(null);
   }, []);
 
   const openEditEditor = useCallback((id: string, openFormula = false) => {
@@ -742,7 +763,13 @@ export default function App() {
       const area = canvasAreaRef.current?.getBoundingClientRect();
       const cardSize = getMetricCardSize(draft.behavior);
       const existingMetrics = Object.values(model.metrics);
-      const position = existing?.position ?? (existingMetrics.length > 0
+      const contextPosition = editor.createAt
+        ? {
+            x: editor.createAt.x - cardSize.width / 2,
+            y: editor.createAt.y - cardSize.height / 2,
+          }
+        : undefined;
+      const position = existing?.position ?? contextPosition ?? (existingMetrics.length > 0
         ? {
             x: Math.max(
               ...existingMetrics.map((current) => (
@@ -854,6 +881,7 @@ export default function App() {
     setSelectedGroupId(null);
     setMetricMenu(null);
     setGroupMenu(null);
+    setCanvasMenu(null);
   }, [selectedIds]);
 
   const handleSelectionMove = useCallback((point: CanvasPoint) => {
@@ -1310,6 +1338,21 @@ export default function App() {
           onBackgroundPointerDown={handleSelectionStart}
           onBackgroundPointerMove={handleSelectionMove}
           onBackgroundPointerUp={handleSelectionEnd}
+          onBackgroundContextMenu={(point, event) => {
+            setMetricMenu(null);
+            setGroupMenu(null);
+            setCanvasMenu({
+              point,
+              x: Math.max(
+                CANVAS_MENU_EDGE_GAP,
+                Math.min(event.clientX, window.innerWidth - CANVAS_MENU_WIDTH - CANVAS_MENU_EDGE_GAP),
+              ),
+              y: Math.max(
+                CANVAS_MENU_EDGE_GAP,
+                Math.min(event.clientY, window.innerHeight - CANVAS_MENU_HEIGHT - CANVAS_MENU_EDGE_GAP),
+              ),
+            });
+          }}
         >
           {Object.values(model.visualGroups).map((group) => (
             <VisualGroupFrame
@@ -1432,7 +1475,7 @@ export default function App() {
           onZoomOut={zoomOut}
           onFitToView={handleFitToView}
           onAutoLayout={handleAutoLayout}
-          onAddMetric={openCreateEditor}
+          onAddMetric={() => openCreateEditor()}
           onUndo={undo}
           onRedo={redo}
           canUndo={history.past.length > 0}
@@ -1566,6 +1609,14 @@ export default function App() {
             Удалить метрику
           </button>
         </div>
+      ) : null}
+
+      {canvasMenu ? (
+        <CanvasContextMenu
+          x={canvasMenu.x}
+          y={canvasMenu.y}
+          onCreateMetric={() => openCreateEditor(canvasMenu.point)}
+        />
       ) : null}
 
       {groupMenu ? (

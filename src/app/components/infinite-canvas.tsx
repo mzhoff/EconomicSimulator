@@ -51,6 +51,7 @@ interface CanvasProps {
   onBackgroundPointerDown?: (point: CanvasPoint, event: React.PointerEvent<HTMLDivElement>) => void;
   onBackgroundPointerMove?: (point: CanvasPoint, event: React.PointerEvent<HTMLDivElement>) => void;
   onBackgroundPointerUp?: (point: CanvasPoint, event: React.PointerEvent<HTMLDivElement>) => void;
+  onBackgroundContextMenu?: (point: CanvasPoint, event: React.MouseEvent<HTMLDivElement>) => void;
 }
 
 export function InfiniteCanvas({
@@ -62,6 +63,7 @@ export function InfiniteCanvas({
   onBackgroundPointerDown,
   onBackgroundPointerMove,
   onBackgroundPointerUp,
+  onBackgroundContextMenu,
 }: CanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const isPanningRef = useRef(false);
@@ -161,6 +163,11 @@ export function InfiniteCanvas({
     }
   }, [onBackgroundPointerUp, toWorldPoint]);
 
+  const handleContextMenu = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    onBackgroundContextMenu?.(toWorldPoint(event.clientX, event.clientY), event);
+  }, [onBackgroundContextMenu, toWorldPoint]);
+
   useEffect(() => {
     const element = containerRef.current;
     if (!element) return;
@@ -198,6 +205,7 @@ export function InfiniteCanvas({
       onPointerMove={handlePointerMove}
       onPointerUp={finishPointerInteraction}
       onPointerCancel={finishPointerInteraction}
+      onContextMenu={handleContextMenu}
     >
       <div
         style={{

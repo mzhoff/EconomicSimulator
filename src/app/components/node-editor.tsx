@@ -72,6 +72,7 @@ const BEHAVIOR_OPTIONS: Array<{
   { value: 'stock', label: 'Stock', description: 'Накопленное состояние' },
   { value: 'flow', label: 'Flow', description: 'Значение за период' },
   { value: 'rate', label: 'Rate', description: 'Скорость или отношение' },
+  { value: 'one_off', label: 'One-off', description: 'Разовая величина' },
 ];
 
 const CYRILLIC_TRANSLITERATION: Record<string, string> = {
@@ -186,7 +187,7 @@ export function NodeEditor({
             <legend className="mb-[0.5rem] text-[0.6875rem] text-muted-foreground">
               Тип метрики
             </legend>
-            <div className="grid grid-cols-3 gap-[0.5rem]">
+            <div className="grid grid-cols-2 gap-[0.5rem]">
               {BEHAVIOR_OPTIONS.map((option) => (
                 <button
                   key={option.value}
@@ -420,13 +421,27 @@ function BehaviorShape({
     ? 'h-[2.5rem] w-[2.5rem] rounded-[0.375rem]'
     : behavior === 'flow'
       ? 'h-[1.5rem] w-[3.5rem] rounded-[0.375rem]'
-      : 'h-[1.25rem] w-[2.875rem] rounded-[0.625rem]';
+      : behavior === 'rate'
+        ? 'h-[1.25rem] w-[2.875rem] rounded-[0.625rem]'
+        : 'h-[1.5rem] w-[3.25rem] rounded-[0.375rem] border-dashed';
 
   return (
     <span className={`flex h-[2.75rem] items-center justify-center`}>
-      <span className={`${shape} border transition-colors ${
-        selected ? 'border-primary bg-primary/10' : 'border-muted-foreground/35 bg-secondary'
-      }`} />
+      <span
+        className={`${shape} relative border transition-colors ${
+          selected ? 'border-primary bg-primary/10' : 'border-muted-foreground/35 bg-secondary'
+        }`}
+      >
+        {behavior === 'one_off' ? (
+          <span
+            aria-hidden="true"
+            className={`absolute right-0 top-0 size-[0.625rem] ${
+              selected ? 'bg-primary/20' : 'bg-amber-200/70'
+            }`}
+            style={{ clipPath: 'polygon(0 0, 100% 0, 100% 100%)' }}
+          />
+        ) : null}
+      </span>
     </span>
   );
 }

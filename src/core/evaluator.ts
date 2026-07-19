@@ -53,7 +53,28 @@ function inferProductBehavior(left: InferredNode, right: InferredNode): MetricBe
     return 'flow';
   }
   if (left.behavior === 'stock' || right.behavior === 'stock') return 'stock';
+  if (left.behavior === 'one_off' || right.behavior === 'one_off') return 'one_off';
   return 'rate';
+}
+
+function inferAdditiveBehavior(
+  operator: 'add' | 'subtract',
+  left: InferredNode,
+  right: InferredNode,
+): MetricBehavior {
+  if (left.zeroLiteral) return right.behavior;
+  if (right.zeroLiteral) return left.behavior;
+  if (left.behavior === right.behavior) return left.behavior;
+
+  const leftIsStockIncrement = left.behavior === 'stock' && right.behavior === 'one_off';
+  const commutativeStockIncrement = operator === 'add'
+    && left.behavior === 'one_off'
+    && right.behavior === 'stock';
+  if (leftIsStockIncrement || commutativeStockIncrement) return 'stock';
+
+  throw new Error(
+    `Нельзя ${operator === 'add' ? 'складывать' : 'вычитать'} ${left.behavior} и ${right.behavior}.`,
+  );
 }
 
 export function inferFormulaNode(node: FormulaNode, metrics: Record<string, MetricDef>): InferredNode {
@@ -77,14 +98,16 @@ export function inferFormulaNode(node: FormulaNode, metrics: Record<string, Metr
         if (!left.zeroLiteral && !right.zeroLiteral && !unitsEqual(left.unit, right.unit)) {
           throw unitMismatch(left.unit, right.unit);
         }
-        if (!left.zeroLiteral && !right.zeroLiteral && left.behavior !== right.behavior) {
-          throw new Error(`Нельзя ${node.operator === 'add' ? 'складывать' : 'вычитать'} ${left.behavior} и ${right.behavior}.`);
-        }
+        const behavior = inferAdditiveBehavior(node.operator, left, right);
         if (!grainsEqual(left.grain, right.grain)) {
           throw new Error('Нельзя складывать значения с разным grain без явной агрегации.');
         }
         const inferred = left.zeroLiteral ? right : left;
-        return { unit: inferred.unit, behavior: inferred.behavior, grain: inferred.grain };
+        return {
+          unit: inferred.unit,
+          behavior,
+          grain: inferred.grain,
+        };
       }
 
       if (node.operator === 'multiply') {
@@ -102,6 +125,7 @@ export function inferFormulaNode(node: FormulaNode, metrics: Record<string, Metr
           isDuration(dividedUnit)
           || (left.behavior === 'flow' && right.behavior === 'flow')
           || (left.behavior === 'stock' && right.behavior === 'stock')
+          || (left.behavior === 'one_off' && right.behavior === 'one_off')
         )
           ? 'rate'
           : left.behavior,

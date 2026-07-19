@@ -1,5 +1,10 @@
 import { getCalculationRelations } from './evaluator';
-import type { ModelState, UnitSpec } from './model';
+import type { MetricBehavior, ModelState, UnitSpec } from './model';
+
+export function behaviorLabel(behavior: MetricBehavior): string {
+  if (behavior === 'one_off') return 'One-off';
+  return behavior[0].toUpperCase() + behavior.slice(1);
+}
 
 export function autoLayout(model: ModelState): Record<string, { x: number; y: number }> {
   const ids = Object.keys(model.metrics);
@@ -44,7 +49,13 @@ export function autoLayout(model: ModelState): Record<string, { x: number; y: nu
       })
       .forEach((id) => {
         const behavior = model.metrics[id].behavior;
-        const height = behavior === 'stock' ? 272 : behavior === 'rate' ? 88 : 112;
+        const height = behavior === 'stock'
+          ? 272
+          : behavior === 'rate'
+            ? 88
+            : behavior === 'one_off'
+              ? 104
+              : 112;
         positions[id] = { x: 60 + level * 360, y: nextY };
         nextY += height + 40;
       });

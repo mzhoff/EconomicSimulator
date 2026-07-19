@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import fixture from './fixtures/tokberi-base-station.json';
 import { computeGraphFocus, computeImpact, computeTokBeriThresholds } from './analysis';
 import { createBlankModel } from './builder';
-import { evaluateModel, getCalculationRelations } from './evaluator';
+import { evaluateModel, getCalculationRelations, inferFormulaNode } from './evaluator';
 import {
   assertUniqueMetricAlias,
   formatFormulaAst,
@@ -11,6 +11,7 @@ import {
 import { validateModelDocument } from './schema';
 import {
   createWorkspaceDocument,
+  BEHAVIOR_UPGRADE_BACKUP_KEY,
   importWorkspace,
   LEGACY_WORKSPACE_STORAGE_KEY,
   loadWorkspace,
@@ -122,13 +123,38 @@ describe('schema, AST and DAG safety', () => {
     if (!checked.ok) expect(checked.issues.some((issue) => issue.message.includes('Несовместимые единицы'))).toBe(true);
   });
 
-  it('allows only Stock, Flow and Rate in schema v2', () => {
+  it('allows One-off but still rejects Event in the arithmetic graph', () => {
+    const validModel = structuredClone(createTokBeriModel());
+    expect(validModel.metrics.delivery_cost.behavior).toBe('one_off');
+    expect(validateModelDocument(validModel)).toMatchObject({ ok: true });
+
     const model = structuredClone(createTokBeriModel()) as unknown as Record<string, unknown>;
     const metrics = model.metrics as Record<string, Record<string, unknown>>;
     metrics.lost_units.behavior = 'event';
     const checked = validateModelDocument(model);
     expect(checked.ok).toBe(false);
     if (!checked.ok) expect(checked.issues.some((issue) => issue.path.endsWith('.behavior'))).toBe(true);
+  });
+
+  it('keeps CAPEX as Stock when One-off costs are added', () => {
+    const model = createTokBeriModel();
+    const oneOffSum = inferFormulaNode(
+      parseFormula('delivery_cost + installation_cost', model.metrics).ast,
+      model.metrics,
+    );
+    const totalCapex = inferFormulaNode(model.metrics.total_capex.formula!.ast, model.metrics);
+
+    expect(oneOffSum.behavior).toBe('one_off');
+    expect(totalCapex.behavior).toBe('stock');
+    expect(evaluateModel(model).errors).toEqual([]);
+  });
+
+  it('does not mix One-off with Flow without an explicit Stock accumulator', () => {
+    const model = createTokBeriModel();
+    expect(() => inferFormulaNode(
+      parseFormula('delivery_cost + sim_cost', model.metrics).ast,
+      model.metrics,
+    )).toThrow('Нельзя складывать one_off и flow');
   });
 
   it('round-trips formulas, scenarios and positions through JSON', () => {
@@ -277,7 +303,32 @@ describe('universal builder schema v2', () => {
     expect(loaded.value.model.metrics.sim_cost.alias).toBe('sim_cost');
     expect(loaded.value.model.metrics.sim_cost.domainIds).toContain('fixed_costs');
     expect(loaded.value.model.domains.fixed_costs.metricIds).toContain('sim_cost');
+    expect(loaded.value.model.metrics.delivery_cost.behavior).toBe('one_off');
     expect(storage.getItem(MIGRATION_BACKUP_KEY)).toBe(serializedLegacy);
     expect(storage.getItem(WORKSPACE_STORAGE_KEY)).not.toBeNull();
+  });
+
+  it('upgrades One-off behavior in an existing v2 workspace with backup', () => {
+    const workspace = createWorkspaceDocument(createTokBeriModel());
+    workspace.model.metrics.delivery_cost.behavior = 'stock';
+    workspace.model.metrics.installation_cost.behavior = 'stock';
+    const serialized = JSON.stringify(workspace);
+    const items = new Map<string, string>([[WORKSPACE_STORAGE_KEY, serialized]]);
+    const storage = {
+      get length() { return items.size; },
+      clear: () => items.clear(),
+      getItem: (key: string) => items.get(key) ?? null,
+      key: (index: number) => [...items.keys()][index] ?? null,
+      removeItem: (key: string) => { items.delete(key); },
+      setItem: (key: string, value: string) => { items.set(key, value); },
+    } satisfies Storage;
+
+    const loaded = loadWorkspace(storage);
+
+    expect(loaded.value.model.metrics.delivery_cost.behavior).toBe('one_off');
+    expect(loaded.value.model.metrics.installation_cost.behavior).toBe('one_off');
+    expect(loaded.value.model.metrics.total_capex.behavior).toBe('stock');
+    expect(storage.getItem(BEHAVIOR_UPGRADE_BACKUP_KEY)).toBe(serialized);
+    expect(loaded.warning).toContain('One-off');
   });
 });

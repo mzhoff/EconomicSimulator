@@ -30,6 +30,14 @@ describe('metric card geometry', () => {
     });
   });
 
+  it('uses a ticket-like intermediate size for One-off', () => {
+    expect(getMetricCardSize('one_off')).toEqual({
+      width: 248,
+      height: 104,
+      borderRadius: 14,
+    });
+  });
+
   it('places connection ports in the vertical center of each card', () => {
     expect(getMetricCardBounds({ x: 100, y: 40 }, 'rate')).toMatchObject({
       right: 324,

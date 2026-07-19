@@ -1,9 +1,11 @@
 import type { StorageResult } from '../core/storage';
 import { validateWorkspaceDocument } from '../core/schema';
 import type { WorkspaceDocument } from '../core/model';
+import { upgradeOneOffBehaviors } from '../core/migration';
 
 export const MODEL_LIBRARY_VERSION = 1 as const;
 export const MODEL_LIBRARY_STORAGE_KEY = 'economic-simulator:model-library:v1';
+export const MODEL_LIBRARY_BEHAVIOR_BACKUP_KEY = 'economic-simulator:model-library:backup:one-off';
 
 export interface ModelLibraryEntry {
   workspace: WorkspaceDocument;
@@ -60,6 +62,35 @@ function serializeLibrary(library: ModelLibraryState): string {
   return JSON.stringify(library, null, 2);
 }
 
+function upgradeLibraryBehaviors(value: unknown): { value: unknown; changed: boolean } {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return { value, changed: false };
+  }
+  const candidate = value as Partial<ModelLibraryState>;
+  if (!candidate.entries || typeof candidate.entries !== 'object' || Array.isArray(candidate.entries)) {
+    return { value, changed: false };
+  }
+
+  let changed = false;
+  const entries = Object.fromEntries(
+    Object.entries(candidate.entries).map(([modelId, rawEntry]) => {
+      if (!rawEntry || typeof rawEntry !== 'object' || Array.isArray(rawEntry)) {
+        return [modelId, rawEntry];
+      }
+      const workspace = (rawEntry as Partial<ModelLibraryEntry>).workspace;
+      if (!workspace) return [modelId, rawEntry];
+      const upgraded = upgradeOneOffBehaviors(workspace);
+      if (!upgraded.changed) return [modelId, rawEntry];
+      changed = true;
+      return [modelId, { ...rawEntry, workspace: upgraded.workspace }];
+    }),
+  );
+
+  return changed
+    ? { changed: true, value: { ...candidate, entries } }
+    : { value, changed: false };
+}
+
 /**
  * Loads the multi-model library. When no library exists yet, the current
  * single-workspace document becomes its first entry and is persisted as-is.
@@ -79,8 +110,20 @@ export function loadModelLibrary(
   try {
     const raw = storage.getItem(MODEL_LIBRARY_STORAGE_KEY);
     if (raw) {
-      const parsed = validateLibrary(JSON.parse(raw) as unknown);
-      if (parsed) return { value: parsed };
+      const upgraded = upgradeLibraryBehaviors(JSON.parse(raw) as unknown);
+      const parsed = validateLibrary(upgraded.value);
+      if (parsed) {
+        if (upgraded.changed) {
+          storage.setItem(MODEL_LIBRARY_BEHAVIOR_BACKUP_KEY, raw);
+          storage.setItem(MODEL_LIBRARY_STORAGE_KEY, serializeLibrary(parsed));
+        }
+        return {
+          value: parsed,
+          warning: upgraded.changed
+            ? 'Доставка и монтаж в сохранённых моделях обновлены до One-off; библиотека сохранена с backup.'
+            : undefined,
+        };
+      }
       return {
         value: fallbackLibrary,
         warning: 'Сохранённая библиотека моделей повреждена; открыта текущая рабочая модель.',

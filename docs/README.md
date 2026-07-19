@@ -69,7 +69,7 @@ EconomicSimulator должен помогать продукт-менеджер�
 ### 6. Универсальный конструктор
 
 [Phase 2: Universal Model Builder](phase-2-universal-builder.md) фиксирует
-согласованный минимальный контракт ручного построения моделей: три behavior,
+согласованный минимальный контракт ручного построения моделей: четыре behavior,
 aliases, Formula Composer, Canvas-соединения, пользовательские Domain
 many-to-many и Visual Groups.
 

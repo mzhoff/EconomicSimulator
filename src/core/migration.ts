@@ -21,6 +21,11 @@ const DOMAIN_PRESENTATION: Record<string, Pick<DomainDef, 'name' | 'color' | 'de
   results: { name: 'Результаты', color: '#14b8a6', description: 'Ключевые результаты модели.' },
 };
 
+const ONE_OFF_METRIC_DEFINITION_IDS = new Set([
+  'tokberi.delivery_cost',
+  'tokberi.installation_cost',
+]);
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -49,7 +54,48 @@ function uniqueAlias(preferred: string, used: Set<string>): string {
 }
 
 function migrateBehavior(value: unknown): MetricBehavior {
-  return value === 'stock' || value === 'rate' ? value : 'flow';
+  return value === 'stock' || value === 'rate' || value === 'one_off' ? value : 'flow';
+}
+
+function migratedBehaviorForMetric(
+  definitionId: unknown,
+  behavior: unknown,
+): MetricBehavior {
+  return typeof definitionId === 'string' && ONE_OFF_METRIC_DEFINITION_IDS.has(definitionId)
+    ? 'one_off'
+    : migrateBehavior(behavior);
+}
+
+export function upgradeOneOffBehaviors(
+  workspace: WorkspaceDocument,
+): { workspace: WorkspaceDocument; changed: boolean } {
+  if (!workspace?.model?.metrics) return { workspace, changed: false };
+
+  let changed = false;
+  const metrics = Object.fromEntries(
+    Object.entries(workspace.model.metrics).map(([id, metric]) => {
+      if (
+        !ONE_OFF_METRIC_DEFINITION_IDS.has(metric.definitionId)
+        || metric.behavior === 'one_off'
+      ) {
+        return [id, metric];
+      }
+      changed = true;
+      return [id, { ...metric, behavior: 'one_off' as const }];
+    }),
+  );
+
+  if (!changed) return { workspace, changed: false };
+  return {
+    changed: true,
+    workspace: {
+      ...workspace,
+      model: {
+        ...workspace.model,
+        metrics,
+      },
+    },
+  };
 }
 
 function migrateLegacyModel(value: Record<string, unknown>): ModelState {
@@ -80,7 +126,7 @@ function migrateLegacyModel(value: Record<string, unknown>): ModelState {
       ...(rawMetric as unknown as MetricDef),
       id: metricId,
       alias,
-      behavior: migrateBehavior(rawMetric.behavior),
+      behavior: migratedBehaviorForMetric(rawMetric.definitionId, rawMetric.behavior),
       domain: legacyDomain as MetricDomain,
       domainIds: [...new Set(domainIds)],
     };

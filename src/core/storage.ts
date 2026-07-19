@@ -1,12 +1,17 @@
 import { createTokBeriModel } from './tokberi-template';
 import { MODEL_SCHEMA_VERSION } from './model';
 import type { ModelState, ViewportState, WorkspaceDocument } from './model';
-import { isLegacyWorkspaceDocument, migrateLegacyWorkspaceDocument } from './migration';
+import {
+  isLegacyWorkspaceDocument,
+  migrateLegacyWorkspaceDocument,
+  upgradeOneOffBehaviors,
+} from './migration';
 import { parseWorkspaceJson, validateWorkspaceDocument } from './schema';
 
 export const WORKSPACE_STORAGE_KEY = 'economic-simulator:workspace:v2';
 export const LAST_VALID_STORAGE_KEY = 'economic-simulator:last-valid:v2';
 export const MIGRATION_BACKUP_KEY = 'economic-simulator:migration-backup:v2';
+export const BEHAVIOR_UPGRADE_BACKUP_KEY = 'economic-simulator:behavior-upgrade-backup:one-off';
 export const LEGACY_WORKSPACE_STORAGE_KEY = 'economic-simulator:workspace:v1';
 const LEGACY_STORAGE_KEYS = [
   LEGACY_WORKSPACE_STORAGE_KEY,
@@ -40,7 +45,9 @@ export function serializeWorkspace(workspace: WorkspaceDocument): string {
 
 export function importWorkspace(text: string): ReturnType<typeof parseWorkspaceJson> {
   const current = parseWorkspaceJson(text);
-  if (current.ok) return current;
+  if (current.ok) {
+    return validateWorkspaceDocument(upgradeOneOffBehaviors(current.workspace).workspace);
+  }
   try {
     const raw = JSON.parse(text) as unknown;
     if (!isLegacyWorkspaceDocument(raw)) return current;
@@ -48,6 +55,32 @@ export function importWorkspace(text: string): ReturnType<typeof parseWorkspaceJ
   } catch {
     return current;
   }
+}
+
+function upgradeStoredWorkspace(
+  workspace: WorkspaceDocument,
+  serialized: string,
+  storage: Storage,
+): StorageResult<WorkspaceDocument> {
+  const upgraded = upgradeOneOffBehaviors(workspace);
+  if (!upgraded.changed) return { value: workspace };
+
+  const checked = validateWorkspaceDocument(upgraded.workspace);
+  if (!checked.ok) {
+    return {
+      value: workspace,
+      warning: `One-off-миграция не применена: ${checked.issues[0]?.message ?? 'ошибка схемы'}`,
+    };
+  }
+
+  storage.setItem(BEHAVIOR_UPGRADE_BACKUP_KEY, serialized);
+  const upgradedSerialized = serializeWorkspace(checked.workspace);
+  storage.setItem(WORKSPACE_STORAGE_KEY, upgradedSerialized);
+  storage.setItem(LAST_VALID_STORAGE_KEY, upgradedSerialized);
+  return {
+    value: checked.workspace,
+    warning: 'Доставка и монтаж обновлены до One-off; предыдущий JSON сохранён в backup.',
+  };
 }
 
 function migrateLegacyStorage(storage: Storage): StorageResult<WorkspaceDocument> | null {
@@ -91,13 +124,21 @@ export function loadWorkspace(storage: Storage | undefined = globalThis.localSto
     const current = storage.getItem(WORKSPACE_STORAGE_KEY);
     if (current) {
       const parsed = parseWorkspaceJson(current);
-      if (parsed.ok) return { value: parsed.workspace };
+      if (parsed.ok) return upgradeStoredWorkspace(parsed.workspace, current, storage);
     }
 
     const lastValid = storage.getItem(LAST_VALID_STORAGE_KEY);
     if (lastValid) {
       const parsed = parseWorkspaceJson(lastValid);
-      if (parsed.ok) return { value: parsed.workspace, warning: 'Основной autosave повреждён; восстановлена последняя валидная версия.' };
+      if (parsed.ok) {
+        const upgraded = upgradeStoredWorkspace(parsed.workspace, lastValid, storage);
+        return {
+          value: upgraded.value,
+          warning: upgraded.warning
+            ? `Основной autosave повреждён; восстановлена последняя валидная версия. ${upgraded.warning}`
+            : 'Основной autosave повреждён; восстановлена последняя валидная версия.',
+        };
+      }
     }
 
     const migrated = migrateLegacyStorage(storage);

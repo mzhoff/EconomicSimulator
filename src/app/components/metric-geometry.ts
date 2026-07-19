@@ -1,6 +1,6 @@
 import type { MetricBehavior } from '../../core/model';
 
-export type BuilderMetricBehavior = Extract<MetricBehavior, 'stock' | 'flow' | 'rate'>;
+export type BuilderMetricBehavior = Extract<MetricBehavior, 'stock' | 'flow' | 'rate' | 'one_off'>;
 
 export interface MetricCardSize {
   width: number;
@@ -35,11 +35,15 @@ const METRIC_CARD_SIZES: Record<BuilderMetricBehavior, MetricCardSize> = {
     height: 88,
     borderRadius: 18,
   },
+  one_off: {
+    width: 248,
+    height: 104,
+    borderRadius: 14,
+  },
 };
 
 export function getMetricCardSize(behavior: MetricBehavior): MetricCardSize {
-  if (behavior === 'stock' || behavior === 'rate') return METRIC_CARD_SIZES[behavior];
-  return METRIC_CARD_SIZES.flow;
+  return METRIC_CARD_SIZES[behavior];
 }
 
 export function getMetricCardBounds(

@@ -3,7 +3,7 @@ import { findDuplicateAliases, validateMetricAlias } from './formula-parser';
 import { MODEL_SCHEMA_VERSION } from './model';
 import type { FormulaNode, ModelState, ValidationIssue, WorkspaceDocument } from './model';
 
-const metricBehaviors = new Set(['stock', 'flow', 'rate']);
+const metricBehaviors = new Set(['stock', 'flow', 'rate', 'one_off']);
 const metricKinds = new Set(['input', 'derived', 'observed', 'assumption']);
 const valueSources = new Set(['input', 'derived', 'observed']);
 const knowledgeStatuses = new Set(['fact', 'assumption', 'scenario', 'target', 'benchmark', 'derived']);

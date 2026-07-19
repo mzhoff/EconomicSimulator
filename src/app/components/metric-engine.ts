@@ -23,7 +23,7 @@ export {
   solveThreshold,
 } from '../../core/analysis';
 export type { GraphFocusMode, GraphFocusState } from '../../core/analysis';
-export { autoLayout, fmt } from '../../core/presentation';
+export { autoLayout, behaviorLabel, fmt } from '../../core/presentation';
 export { unitFromPreset } from '../../core/units';
 export type {
   CalculationRelation,

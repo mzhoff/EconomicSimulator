@@ -3,6 +3,7 @@ import { createWorkspaceDocument } from '../core/storage';
 import { createTokBeriModel } from '../core/tokberi-template';
 import {
   MODEL_LIBRARY_STORAGE_KEY,
+  MODEL_LIBRARY_BEHAVIOR_BACKUP_KEY,
   deleteEntry,
   duplicateEntry,
   loadModelLibrary,
@@ -96,5 +97,31 @@ describe('model library', () => {
 
     expect(saveModelLibrary(library, storage)).toEqual({ value: true });
     expect(loadModelLibrary(fallback, storage).value).toEqual(library);
+  });
+
+  it('upgrades One-off metrics in every saved model and keeps a backup', () => {
+    const storage = new MemoryStorage();
+    const fallback = workspace();
+    const oldWorkspace = structuredClone(fallback);
+    oldWorkspace.model.metrics.delivery_cost.behavior = 'stock';
+    oldWorkspace.model.metrics.installation_cost.behavior = 'stock';
+    const oldLibrary = {
+      version: 1,
+      activeModelId: oldWorkspace.model.id,
+      entries: {
+        [oldWorkspace.model.id]: { workspace: oldWorkspace },
+      },
+    };
+    const serialized = JSON.stringify(oldLibrary);
+    storage.setItem(MODEL_LIBRARY_STORAGE_KEY, serialized);
+
+    const loaded = loadModelLibrary(fallback, storage);
+    const migrated = loaded.value.entries[oldWorkspace.model.id]!.workspace.model.metrics;
+
+    expect(migrated.delivery_cost.behavior).toBe('one_off');
+    expect(migrated.installation_cost.behavior).toBe('one_off');
+    expect(migrated.total_capex.behavior).toBe('stock');
+    expect(storage.getItem(MODEL_LIBRARY_BEHAVIOR_BACKUP_KEY)).toBe(serialized);
+    expect(loaded.warning).toContain('One-off');
   });
 });

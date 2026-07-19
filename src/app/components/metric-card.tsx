@@ -3,12 +3,13 @@ import {
   Activity,
   Database,
   Sparkles,
+  Ticket,
   Trash2,
   TrendingDown,
   TrendingUp,
 } from 'lucide-react';
 import type { MetricDef } from '../../core/model';
-import { fmt } from '../../core/presentation';
+import { behaviorLabel, fmt } from '../../core/presentation';
 import { getMetricCardSize } from './metric-geometry';
 
 const statusColors: Record<string, string> = {
@@ -50,11 +51,14 @@ export function MetricCard({
   const geometry = getMetricCardSize(metric.behavior);
   const isStock = metric.behavior === 'stock';
   const isRate = metric.behavior === 'rate';
+  const isOneOff = metric.behavior === 'one_off';
   const behaviorIcon = metric.behavior === 'stock'
     ? <Database className="size-[0.875rem] text-sky-600" />
     : metric.behavior === 'rate'
       ? <Activity className="size-[0.875rem] text-violet-500" />
-      : <TrendingUp className="size-[0.875rem] text-emerald-600" />;
+      : metric.behavior === 'one_off'
+        ? <Ticket className="size-[0.875rem] text-amber-600" />
+        : <TrendingUp className="size-[0.875rem] text-emerald-600" />;
   const dragTimerRef = useRef<number | null>(null);
   const didDragRef = useRef(false);
 
@@ -121,9 +125,26 @@ export function MetricCard({
             : relationHovered
               ? 'border-sky-400 bg-card shadow-[0_0_0_2px_rgba(14,165,233,0.22)]'
             : `${statusColors[metric.validationStatus] ?? 'border-border'} bg-card hover:border-muted-foreground/30 hover:shadow-md`
-        } ${isRate ? 'p-[0.625rem]' : 'p-[0.875rem]'}`}
-        style={{ borderRadius: geometry.borderRadius }}
+        } ${isRate ? 'p-[0.625rem]' : isOneOff ? 'px-[1rem] py-[0.75rem]' : 'p-[0.875rem]'}`}
+        style={{
+          borderRadius: geometry.borderRadius,
+          backgroundImage: isOneOff
+            ? 'linear-gradient(135deg, transparent 0%, transparent 92%, rgba(251, 191, 36, 0.18) 92%)'
+            : undefined,
+        }}
       >
+        {isOneOff ? (
+          <>
+            <span
+              aria-hidden="true"
+              className="pointer-events-none absolute inset-y-[0.625rem] left-[0.5rem] border-l border-dashed border-amber-400/60"
+            />
+            <span
+              aria-hidden="true"
+              className="pointer-events-none absolute inset-y-[0.625rem] right-[0.5rem] border-r border-dashed border-amber-400/60"
+            />
+          </>
+        ) : null}
         <div className={`${isRate ? 'mb-[0.1875rem]' : 'mb-[0.375rem]'} flex items-center justify-between gap-[0.25rem]`}>
           <div className="flex items-center gap-[0.375rem] flex-1 min-w-0">
             {isNorthStar
@@ -174,8 +195,8 @@ export function MetricCard({
             >
               {isInput ? 'Input' : 'Derived'}
             </span>
-            <span className={`rounded-full bg-secondary text-muted-foreground px-[0.375rem] py-[0.0625rem] capitalize ${isRate ? 'text-[0.5rem]' : 'text-[0.5625rem]'}`}>
-              {metric.behavior}
+            <span className={`rounded-full bg-secondary text-muted-foreground px-[0.375rem] py-[0.0625rem] ${isRate ? 'text-[0.5rem]' : 'text-[0.5625rem]'}`}>
+              {behaviorLabel(metric.behavior)}
             </span>
             {metric.validationStatus !== 'valid' && (
               <span className={`text-[0.5625rem] rounded-full px-[0.375rem] py-[0.0625rem] ${

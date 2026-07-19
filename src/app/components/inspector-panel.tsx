@@ -10,6 +10,7 @@ import {
   Target,
 } from 'lucide-react';
 import {
+  behaviorLabel,
   fmt,
   getCalculationRelations,
   type ImpactResult,
@@ -151,7 +152,7 @@ export function InspectorPanel({
                 )}
 
                 <div className="mt-[0.75rem] space-y-[0.25rem]">
-                  <Row label="Behavior" value={selected.behavior} />
+                  <Row label="Behavior" value={behaviorLabel(selected.behavior)} />
                   <Row label="Unit" value={selected.unit.symbol} />
                   <Row label="Grain" value={`${selected.grain.entity} × ${selected.grain.time}`} />
                   <Row label="Статус знания" value={selected.knowledgeStatus} />

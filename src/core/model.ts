@@ -1,7 +1,7 @@
 export const MODEL_SCHEMA_VERSION = 2 as const;
 export const LEGACY_MODEL_SCHEMA_VERSION = 1 as const;
 
-export type MetricBehavior = 'stock' | 'flow' | 'rate';
+export type MetricBehavior = 'stock' | 'flow' | 'rate' | 'one_off';
 export type MetricKind = 'input' | 'derived' | 'observed' | 'assumption';
 export type MetricDomain =
   | 'demand'

@@ -1,4 +1,11 @@
-import type { BinaryOperator, FormulaNode, FormulaSpec, MetricDef } from './model';
+import type {
+  BinaryOperator,
+  FormulaNode,
+  FormulaSpec,
+  MetricDef,
+  UnitSpec,
+} from './model';
+import { DAY, MONTH, unitsEqual } from './units';
 
 export const METRIC_ALIAS_PATTERN = /^[a-z][a-z0-9_]*$/;
 
@@ -17,6 +24,13 @@ type Token =
   | { type: 'identifier'; value: string; position: number }
   | { type: 'operator'; value: '+' | '-' | '*' | '/'; position: number }
   | { type: 'leftParen' | 'rightParen' | 'end'; position: number };
+
+const LITERAL_UNIT_ALIASES: Record<string, UnitSpec> = {
+  day: DAY,
+  days: DAY,
+  month: MONTH,
+  months: MONTH,
+};
 
 function tokenize(source: string): Token[] {
   const tokens: Token[] = [];
@@ -173,7 +187,17 @@ class Parser {
 
   private parsePrimary(): FormulaNode {
     const token = this.take();
-    if (token.type === 'number') return { type: 'literal', value: token.value };
+    if (token.type === 'number') {
+      const next = this.peek();
+      if (next.type === 'identifier') {
+        const unit = LITERAL_UNIT_ALIASES[next.value.toLowerCase()];
+        if (unit) {
+          this.take();
+          return { type: 'literal', value: token.value, unit };
+        }
+      }
+      return { type: 'literal', value: token.value };
+    }
     if (token.type === 'identifier') {
       const metric = this.metricsByAlias.get(token.value);
       if (!metric) {
@@ -225,7 +249,11 @@ export function formatFormulaAst(
   metrics: Record<string, MetricDef>,
   parentPrecedence = 0,
 ): string {
-  if (node.type === 'literal') return String(node.value);
+  if (node.type === 'literal') {
+    if (node.unit && unitsEqual(node.unit, DAY)) return `${node.value} days`;
+    if (node.unit && unitsEqual(node.unit, MONTH)) return `${node.value} months`;
+    return String(node.value);
+  }
   if (node.type === 'metric') return metrics[node.metricId]?.alias ?? node.metricId;
   if (node.type === 'unary') {
     if (node.operator === 'negate') return `-${formatFormulaAst(node.operand, metrics, 3)}`;

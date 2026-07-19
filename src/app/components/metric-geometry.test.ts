@@ -6,18 +6,18 @@ import {
 } from './metric-geometry';
 
 describe('metric card geometry', () => {
-  it('uses a large square for Stock', () => {
+  it('uses a compact near-square for Stock', () => {
     expect(getMetricCardSize('stock')).toEqual({
       width: 272,
-      height: 272,
+      height: 224,
       borderRadius: 14,
     });
   });
 
-  it('uses a compact rectangle for Flow', () => {
+  it('gives Flow enough height for a wrapped formula', () => {
     expect(getMetricCardSize('flow')).toEqual({
       width: 272,
-      height: 112,
+      height: 136,
       borderRadius: 14,
     });
   });

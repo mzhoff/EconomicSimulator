@@ -22,12 +22,12 @@ export type MetricPortSide = 'input' | 'output';
 const METRIC_CARD_SIZES: Record<BuilderMetricBehavior, MetricCardSize> = {
   stock: {
     width: 272,
-    height: 272,
+    height: 224,
     borderRadius: 14,
   },
   flow: {
     width: 272,
-    height: 112,
+    height: 136,
     borderRadius: 14,
   },
   rate: {

@@ -20,6 +20,7 @@ import {
   WORKSPACE_STORAGE_KEY,
 } from './storage';
 import { createTokBeriModel } from './tokberi-template';
+import { DAY } from './units';
 
 describe('TokBeri reference model', () => {
   it('matches the trusted station fixture', () => {
@@ -204,6 +205,23 @@ describe('universal builder schema v2', () => {
         right: { type: 'literal', value: 2 },
       },
     });
+  });
+
+  it('round-trips duration literals used by editable formulas', () => {
+    const model = createTokBeriModel();
+    const formula = parseFormula('rentals_per_day * 30 days', model.metrics);
+
+    expect(formula.ast).toEqual({
+      type: 'binary',
+      operator: 'multiply',
+      left: { type: 'metric', metricId: 'rentals_per_day' },
+      right: { type: 'literal', value: 30, unit: DAY },
+    });
+    expect(formatFormulaAst(formula.ast, model.metrics))
+      .toBe('rentals_per_day * 30 days');
+
+    model.metrics.successful_rentals.formula = formula;
+    expect(evaluateModel(model).errors).toEqual([]);
   });
 
   it('keeps parsed formulas valid when an alias is renamed', () => {

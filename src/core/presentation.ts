@@ -50,12 +50,12 @@ export function autoLayout(model: ModelState): Record<string, { x: number; y: nu
       .forEach((id) => {
         const behavior = model.metrics[id].behavior;
         const height = behavior === 'stock'
-          ? 272
+          ? 224
           : behavior === 'rate'
             ? 88
             : behavior === 'one_off'
               ? 104
-              : 112;
+              : 136;
         positions[id] = { x: 60 + level * 360, y: nextY };
         nextY += height + 40;
       });

@@ -29,6 +29,7 @@ interface MetricCardProps {
   onContextMenu?: (id: string, event: React.MouseEvent) => void;
   delta?: number;
   impactActive: boolean;
+  formulaSource?: string;
   onConnectionPointerDown?: (id: string, event: React.PointerEvent<HTMLButtonElement>) => void;
   isNorthStar?: boolean;
 }
@@ -43,6 +44,7 @@ export function MetricCard({
   onContextMenu,
   delta,
   impactActive,
+  formulaSource,
   onConnectionPointerDown,
   isNorthStar = false,
 }: MetricCardProps) {
@@ -50,6 +52,7 @@ export function MetricCard({
   const hasDelta = delta !== undefined && Math.abs(delta) > 0.0001;
   const geometry = getMetricCardSize(metric.behavior);
   const isStock = metric.behavior === 'stock';
+  const isFlow = metric.behavior === 'flow';
   const isRate = metric.behavior === 'rate';
   const isOneOff = metric.behavior === 'one_off';
   const behaviorIcon = metric.behavior === 'stock'
@@ -209,9 +212,14 @@ export function MetricCard({
           <span className="text-[0.5625rem] text-muted-foreground">{metric.unit.symbol}</span>
         </div>
 
-        {metric.formula && !isRate && (
-          <div className="mt-[0.25rem] text-[0.5625rem] text-muted-foreground/60 font-mono truncate">
-            ƒ = {metric.formula.source}
+        {metric.formula && formulaSource && !isRate && (
+          <div
+            title={`ƒ = ${formulaSource}`}
+            className={`mt-[0.25rem] font-mono text-[0.5625rem] leading-[1.35] text-muted-foreground/60 ${
+              isFlow ? 'whitespace-normal break-words' : 'truncate'
+            }`}
+          >
+            ƒ = {formulaSource}
           </div>
         )}
 

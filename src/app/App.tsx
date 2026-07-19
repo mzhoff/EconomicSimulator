@@ -1407,6 +1407,9 @@ export default function App() {
                   setSelectedIds([id]);
                   setMetricMenu({ id, x: event.clientX, y: event.clientY });
                 }}
+                formulaSource={metric.formula
+                  ? formatFormulaAst(metric.formula.ast, evaluation.metrics)
+                  : undefined}
                 delta={impactActive && impact?.deltas[metric.id] !== undefined && metric.id !== impact.inputId
                   ? impact.deltas[metric.id]
                   : undefined}
@@ -1520,6 +1523,7 @@ export default function App() {
           onCreateDomain={() => handleOpenDomainManager()}
           onOpenFormula={() => setFormulaOpen(true)}
           aliasError={editorAliasError}
+          formulaError={editor?.draft.valueMode === 'formula' ? formulaPreview.errors[0] : undefined}
           formError={editorError ?? undefined}
         />
 

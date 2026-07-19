@@ -40,6 +40,7 @@ export interface NodeEditorProps {
   onCreateDomain?: () => void;
   onOpenFormula?: () => void;
   aliasError?: string;
+  formulaError?: string;
   formError?: string;
   saving?: boolean;
   unitOptions?: UnitPresetOption[];
@@ -113,6 +114,7 @@ export function NodeEditor({
   onCreateDomain,
   onOpenFormula,
   aliasError,
+  formulaError,
   formError,
   saving = false,
   unitOptions = DEFAULT_UNIT_OPTIONS,
@@ -127,7 +129,14 @@ export function NodeEditor({
     : draft.valueMode === 'manual' && (draft.value < draft.min || draft.value > draft.max)
       ? 'Значение должно находиться между минимумом и максимумом.'
       : undefined;
-  const blockingError = aliasError ?? localAliasError ?? rangeError;
+  const formulaRequiredError = draft.valueMode === 'formula' && !draft.formulaSource.trim()
+    ? 'Введите формулу.'
+    : undefined;
+  const blockingError = aliasError
+    ?? localAliasError
+    ?? rangeError
+    ?? formulaRequiredError
+    ?? formulaError;
   const canSave = Boolean(draft.name.trim() && draft.alias.trim() && !blockingError && !formError && !saving);
 
   const update = <Key extends keyof MetricNodeDraft>(key: Key, value: MetricNodeDraft[Key]) => {
@@ -282,8 +291,8 @@ export function NodeEditor({
                   ) : (
                     <div className="rounded-[var(--radius-lg)] border border-violet-200 bg-violet-50/60 px-[0.75rem] py-[0.5rem]">
                       <div className="text-[0.625rem] text-violet-700">Рассчитывается</div>
-                      <div className="mt-[0.125rem] truncate font-mono text-[0.6875rem] text-violet-950">
-                        {draft.formulaSource || 'Формула не задана'}
+                      <div className="mt-[0.125rem] text-[0.6875rem] text-violet-950">
+                        По формуле справа
                       </div>
                     </div>
                   )}
@@ -304,10 +313,7 @@ export function NodeEditor({
                       active={draft.valueMode === 'formula'}
                       icon={<Braces className="size-[0.75rem]" />}
                       label="Формула"
-                      onClick={() => {
-                        update('valueMode', 'formula');
-                        onOpenFormula?.();
-                      }}
+                      onClick={() => update('valueMode', 'formula')}
                     />
                   </div>
                 </fieldset>
@@ -324,26 +330,53 @@ export function NodeEditor({
                     </div>
                     {rangeError ? <p className="mt-[0.25rem] text-[0.625rem] text-red-600">{rangeError}</p> : null}
                   </div>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={onOpenFormula}
-                    className="flex w-full items-center justify-between rounded-[var(--radius-lg)] border border-violet-200 bg-violet-50/50 px-[0.75rem] py-[0.625rem] text-left transition-colors hover:bg-violet-50 cursor-pointer"
-                  >
-                    <span>
-                      <span className="block text-[0.75rem] text-violet-950" style={{ fontWeight: 600 }}>
-                        Открыть Formula Composer
-                      </span>
-                      <span className="block text-[0.625rem] text-violet-700">
-                        Формула создаст Calculation-связи автоматически
-                      </span>
-                    </span>
-                    <Braces className="size-[1rem] text-violet-600" />
-                  </button>
-                )}
+                ) : null}
               </div>
 
               <div className="space-y-[1rem]">
+                {draft.valueMode === 'formula' ? (
+                  <div>
+                    <div className="mb-[0.25rem] flex items-center justify-between gap-[0.75rem]">
+                      <label
+                        htmlFor="metric-formula-source"
+                        className="flex items-center gap-[0.25rem] text-[0.6875rem] text-muted-foreground"
+                      >
+                        Формула
+                        <span className="text-red-500">*</span>
+                      </label>
+                      {onOpenFormula ? (
+                        <button
+                          type="button"
+                          onClick={onOpenFormula}
+                          className="flex items-center gap-[0.25rem] text-[0.625rem] text-violet-700 transition-colors hover:text-violet-950 cursor-pointer"
+                        >
+                          <Braces className="size-[0.75rem]" />
+                          Расширенный редактор
+                        </button>
+                      ) : null}
+                    </div>
+                    <textarea
+                      id="metric-formula-source"
+                      value={draft.formulaSource}
+                      onChange={(event) => update('formulaSource', event.target.value)}
+                      rows={3}
+                      spellCheck={false}
+                      autoCapitalize="none"
+                      placeholder="rentals_per_day * average_check"
+                      className="field-input resize-none font-mono leading-[1.5]"
+                    />
+                    {formulaRequiredError || formulaError ? (
+                      <span className="mt-[0.25rem] block text-[0.625rem] text-red-600">
+                        {formulaRequiredError ?? formulaError}
+                      </span>
+                    ) : (
+                      <span className="mt-[0.25rem] block text-[0.5625rem] leading-[1.4] text-muted-foreground">
+                        Используйте технические alias метрик. Связи на Canvas обновятся после сохранения.
+                      </span>
+                    )}
+                  </div>
+                ) : null}
+
                 <Field label="Домены" hint="Метрика может находиться сразу в нескольких смысловых доменах.">
                   <div className="flex flex-wrap gap-[0.375rem]">
                     {domains.map((domain) => {
@@ -388,7 +421,7 @@ export function NodeEditor({
                   <textarea
                     value={draft.description}
                     onChange={(event) => update('description', event.target.value)}
-                    rows={5}
+                    rows={draft.valueMode === 'formula' ? 3 : 5}
                     placeholder="Что измеряет эта метрика?"
                     className="field-input resize-none"
                   />

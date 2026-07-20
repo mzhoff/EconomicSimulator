@@ -1,0 +1,47 @@
+{
+  "fixtureVersion": 1,
+  "source": "tokberi_unit_economics_model.numbers",
+  "scope": "one 6-slot station, one 30-day month, before taxes",
+  "excluded": [
+    "franchise",
+    "hq",
+    "taxes"
+  ],
+  "tolerance": 0.01,
+  "knownConflicts": [
+    "Tariff and deposit values require reconciliation with the current product configuration.",
+    "The loss percentage is treated as a scenario reserve until lost-device events are imported."
+  ],
+  "inputs": {
+    "rentals_per_day": 1.5,
+    "short_tariff_share": 0.8,
+    "short_tariff_check": 200,
+    "long_tariff_check": 435,
+    "venue_commission_rate": 0.2,
+    "acquiring_rate": 0.035,
+    "loss_reserve_rate": 0.05,
+    "battery_count": 4,
+    "battery_replacement_cost": 1200,
+    "useful_cycles_per_battery": 600,
+    "station_purchase_cost": 4000,
+    "delivery_cost": 3000,
+    "installation_cost": 3000,
+    "sim_cost": 100,
+    "maintenance_cost": 500,
+    "station_life_months": 36
+  },
+  "expected": {
+    "successful_rentals": 45,
+    "average_check": 247,
+    "rental_revenue": 11115,
+    "venue_commission": 2223,
+    "acquiring_cost": 389.025,
+    "loss_reserve_cost": 555.75,
+    "battery_wear_cost": 90,
+    "total_capex": 14800,
+    "cash_contribution": 7257.225,
+    "station_depreciation": 411.1111111111,
+    "profit_before_tax": 6846.1138888889,
+    "payback_months": 2.0393469956
+  }
+}

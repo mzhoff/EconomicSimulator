@@ -1,53 +1,453 @@
-import { type Edge, type MetricDef } from './metric-engine';
+import { memo, useMemo } from 'react';
+import type { Edge, GraphFocusState, MetricDef } from './metric-engine';
+import {
+  getConnectionPath,
+  getPortSideVector,
+  type EdgeLineStyle,
+} from './edge-routing';
+import { getSmartMetricPorts } from './metric-geometry';
 
-const CARD_W = 272; // 17rem
-const CARD_H = 100;
+const COLORS = {
+  calculation: '#94a3b8',
+  backbone: '#64748b',
+  influence: '#8b5cf6',
+  upstream: '#0284c7',
+  downstream: '#7c3aed',
+  connecting: '#0f766e',
+  positive: '#059669',
+  negative: '#dc2626',
+  neutralImpact: '#64748b',
+  dynamic: '#d97706',
+  warning: '#d97706',
+  error: '#dc2626',
+} as const;
 
 interface CanvasEdgesProps {
   edges: Edge[];
   metrics: Record<string, MetricDef>;
-  highlightedEdges: Set<string>;
-  impactActive: boolean;
+  focus: GraphFocusState;
+  impactDeltas?: Record<string, number>;
+  scale: number;
+  lineStyle: EdgeLineStyle;
+  hoveredEdgeKey: string | null;
+  onHoveredEdgeChange: (edge: Edge | null) => void;
 }
 
-export function CanvasEdges({ edges, metrics, highlightedEdges, impactActive }: CanvasEdgesProps) {
+interface EdgePresentation {
+  color: string;
+  screenWidth: number;
+  opacity: number;
+  markerId: keyof typeof MARKER_COLORS;
+  dash?: number[];
+  label: string;
+  operator?: string;
+}
+
+interface ProblemPaths {
+  error: Set<string>;
+  warning: Set<string>;
+}
+
+const MARKER_COLORS = {
+  calculation: COLORS.calculation,
+  backbone: COLORS.backbone,
+  influence: COLORS.influence,
+  upstream: COLORS.upstream,
+  downstream: COLORS.downstream,
+  connecting: COLORS.connecting,
+  positive: COLORS.positive,
+  negative: COLORS.negative,
+  neutralImpact: COLORS.neutralImpact,
+  dynamic: COLORS.dynamic,
+  warning: COLORS.warning,
+  error: COLORS.error,
+} as const;
+
+const edgeKey = (edge: Edge): string => `${edge.from}-${edge.to}`;
+function operationSymbol(edge: Edge): string | undefined {
+  if (edge.type !== 'calc') return undefined;
+  if (edge.operation === 'add') return '+';
+  if (edge.operation === 'subtract') return '−';
+  if (edge.operation === 'multiply') return '×';
+  if (edge.operation === 'divide') return '÷';
+  if (edge.operation === 'mixed') return 'ƒ';
+  return '→';
+}
+
+function calculationSemantics(edge: Extract<Edge, { type: 'calc' }>): {
+  color: string;
+  markerId: keyof typeof MARKER_COLORS;
+  label: string;
+} {
+  if (edge.direction === 'positive') {
+    return { color: COLORS.positive, markerId: 'positive', label: 'повышает' };
+  }
+  if (edge.direction === 'negative') {
+    return { color: COLORS.negative, markerId: 'negative', label: 'понижает' };
+  }
+  if (edge.direction === 'dynamic') {
+    return { color: COLORS.dynamic, markerId: 'dynamic', label: 'зависит от значений' };
+  }
+  return { color: COLORS.neutralImpact, markerId: 'neutralImpact', label: 'нейтральна сейчас' };
+}
+
+function computeProblemPaths(
+  edges: Edge[],
+  metrics: Record<string, MetricDef>,
+  backboneEdges: Set<string>,
+): ProblemPaths {
+  const calculationEdges = edges.filter((edge) => edge.type === 'calc');
+  const adjacency = new Map<string, Edge[]>();
+  for (const edge of calculationEdges) {
+    const outgoing = adjacency.get(edge.from) ?? [];
+    outgoing.push(edge);
+    adjacency.set(edge.from, outgoing);
+  }
+
+  const pathsForStatus = (status: 'error' | 'warning'): Set<string> => {
+    const roots = Object.values(metrics)
+      .filter((metric) => metric.validationStatus === status)
+      .map((metric) => metric.id);
+    const result = new Set<string>();
+    const visited = new Set(roots);
+    const queue = [...roots];
+
+    for (const edge of edges) {
+      if (visited.has(edge.from) || visited.has(edge.to)) result.add(edgeKey(edge));
+    }
+    while (queue.length > 0) {
+      const current = queue.shift()!;
+      for (const edge of adjacency.get(current) ?? []) {
+        const key = edgeKey(edge);
+        if (backboneEdges.has(key)) result.add(key);
+        if (visited.has(edge.to)) continue;
+        visited.add(edge.to);
+        queue.push(edge.to);
+      }
+    }
+    return result;
+  };
+
+  return {
+    error: pathsForStatus('error'),
+    warning: pathsForStatus('warning'),
+  };
+}
+
+function edgePresentation(
+  edge: Edge,
+  metrics: Record<string, MetricDef>,
+  focus: GraphFocusState,
+  impactDeltas: Record<string, number> | undefined,
+  problemPaths: ProblemPaths,
+): EdgePresentation {
+  const key = edgeKey(edge);
+  const toMetric = metrics[edge.to];
+  const isDirect = focus.directEdges.has(key);
+  const isRelevant = focus.relevantEdges.has(key);
+  const hasError = problemPaths.error.has(key);
+  const hasWarning = problemPaths.warning.has(key);
+  const calculation = edge.type === 'calc' ? calculationSemantics(edge) : null;
+  const operator = operationSymbol(edge);
+  const relationLabel = edge.type === 'influence'
+    ? `Influence ${edge.sign >= 0 ? '+' : '−'} · confidence ${edge.confidence}`
+    : `Calculation ${operator} · ${calculation?.label} → ${toMetric?.name ?? edge.to}`;
+
+  if (hasError) {
+    return {
+      color: COLORS.error,
+      screenWidth: 3.5,
+      opacity: 1,
+      markerId: 'error',
+      label: `Проблемный расчётный путь → ${toMetric?.name ?? edge.to}`,
+      operator,
+    };
+  }
+  if (hasWarning) {
+    return {
+      color: COLORS.warning,
+      screenWidth: 3.25,
+      opacity: 1,
+      markerId: 'warning',
+      label: `Guardrail-путь → ${toMetric?.name ?? edge.to}`,
+      operator,
+    };
+  }
+  if (focus.mode === 'analysis' && focus.analysisEdges.has(key)) {
+    const delta = impactDeltas?.[edge.to] ?? 0;
+    const markerId = delta > 0.0001 ? 'positive' : delta < -0.0001 ? 'negative' : 'neutralImpact';
+    const color = markerId === 'positive' ? COLORS.positive : markerId === 'negative' ? COLORS.negative : COLORS.neutralImpact;
+    return {
+      color,
+      screenWidth: Math.min(4.75, 2.75 + Math.abs(delta) / 12),
+      opacity: 1,
+      markerId,
+      dash: edge.type === 'influence' ? [8, 6] : undefined,
+      label: `Impact ${delta > 0 ? '+' : ''}${delta.toFixed(1)}% → ${toMetric?.name ?? edge.to}`,
+      operator,
+    };
+  }
+  if (focus.mode === 'focus' && focus.upstreamEdges.has(key)) {
+    return {
+      color: calculation?.color ?? COLORS.upstream,
+      screenWidth: isDirect ? 3.5 : 2.75,
+      opacity: isDirect ? 1 : 0.82,
+      markerId: calculation?.markerId ?? 'upstream',
+      dash: edge.type === 'influence' ? [8, 6] : undefined,
+      label: `Upstream · ${relationLabel}`,
+      operator,
+    };
+  }
+  if (focus.mode === 'focus' && focus.downstreamEdges.has(key)) {
+    return {
+      color: calculation?.color ?? COLORS.downstream,
+      screenWidth: isDirect ? 3.5 : 2.75,
+      opacity: isDirect ? 1 : 0.82,
+      markerId: calculation?.markerId ?? 'downstream',
+      dash: edge.type === 'influence' ? [8, 6] : undefined,
+      label: `Downstream · ${relationLabel}`,
+      operator,
+    };
+  }
+  if (focus.mode === 'multi' && focus.connectingEdges.has(key)) {
+    return {
+      color: calculation?.color ?? COLORS.connecting,
+      screenWidth: isDirect ? 3.75 : 3,
+      opacity: 1,
+      markerId: calculation?.markerId ?? 'connecting',
+      dash: edge.type === 'influence' ? [8, 6] : undefined,
+      label: `Путь между выбранными · ${relationLabel}`,
+      operator,
+    };
+  }
+  if (isDirect && edge.type === 'influence') {
+    return {
+      color: COLORS.influence,
+      screenWidth: 3,
+      opacity: 1,
+      markerId: 'influence',
+      dash: [8, 6],
+      label: relationLabel,
+      operator,
+    };
+  }
+  if (focus.mode !== 'structure' && !isRelevant) {
+    return {
+      color: edge.type === 'influence' ? COLORS.influence : calculation!.color,
+      screenWidth: edge.type === 'influence' ? 1.6 : 1.35,
+      opacity: 0.11,
+      markerId: edge.type === 'influence' ? 'influence' : calculation!.markerId,
+      dash: edge.type === 'influence' ? [8, 6] : undefined,
+      label: relationLabel,
+      operator,
+    };
+  }
+  if (edge.type === 'influence') {
+    return {
+      color: COLORS.influence,
+      screenWidth: 1.9,
+      opacity: 0.68,
+      markerId: 'influence',
+      dash: [8, 6],
+      label: relationLabel,
+      operator,
+    };
+  }
+  if (focus.backboneEdges.has(key)) {
+    return {
+      color: calculation!.color,
+      screenWidth: 2.15,
+      opacity: 0.82,
+      markerId: calculation!.markerId,
+      label: relationLabel,
+      operator,
+    };
+  }
+  return {
+    color: calculation!.color,
+    screenWidth: 1.75,
+    opacity: 0.58,
+    markerId: calculation!.markerId,
+    label: relationLabel,
+    operator,
+  };
+}
+
+export const CanvasEdges = memo(function CanvasEdges({
+  edges,
+  metrics,
+  focus,
+  impactDeltas,
+  scale,
+  lineStyle,
+  hoveredEdgeKey,
+  onHoveredEdgeChange,
+}: CanvasEdgesProps) {
+  const safeScale = Math.max(scale, 0.05);
+  const markerWidth = 9 / safeScale;
+  const markerHeight = 7 / safeScale;
+  const problemPaths = useMemo(
+    () => computeProblemPaths(edges, metrics, focus.backboneEdges),
+    [edges, focus.backboneEdges, metrics],
+  );
+
   return (
-    <svg className="absolute inset-0 pointer-events-none" style={{ zIndex: 0, width: '100%', height: '100%', overflow: 'visible' }}>
+    <svg
+      aria-label="Связи между метриками"
+      className="absolute inset-0"
+      style={{ zIndex: 0, width: '100%', height: '100%', overflow: 'visible', pointerEvents: 'none' }}
+    >
       <defs>
-        <marker id="arrow-default" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
-          <path d="M 0 0 L 8 3 L 0 6 Z" fill="var(--border)" />
-        </marker>
-        <marker id="arrow-highlight" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
-          <path d="M 0 0 L 8 3 L 0 6 Z" fill="var(--primary)" />
-        </marker>
+        {Object.entries(MARKER_COLORS).map(([id, color]) => (
+          <marker
+            key={id}
+            id={`edge-arrow-${id}`}
+            markerUnits="userSpaceOnUse"
+            markerWidth={markerWidth}
+            markerHeight={markerHeight}
+            viewBox="0 0 9 7"
+            refX="8.2"
+            refY="3.5"
+            orient="auto"
+          >
+            <path d="M 0 0.6 L 8.2 3.5 L 0 6.4 Z" fill={color} />
+          </marker>
+        ))}
       </defs>
+
       {edges.map((edge) => {
         const fromMetric = metrics[edge.from];
         const toMetric = metrics[edge.to];
         if (!fromMetric?.position || !toMetric?.position) return null;
 
-        const key = `${edge.from}-${edge.to}`;
-        const highlighted = highlightedEdges.has(key);
-        const x1 = fromMetric.position.x + CARD_W;
-        const y1 = fromMetric.position.y + CARD_H / 2;
-        const x2 = toMetric.position.x;
-        const y2 = toMetric.position.y + CARD_H / 2;
-        const midX = (x1 + x2) / 2;
-        const d = `M ${x1} ${y1} C ${midX} ${y1}, ${midX} ${y2}, ${x2} ${y2}`;
+        const relationKey = edgeKey(edge);
+        const renderKey = `${edge.type}-${relationKey}`;
+        const presentation = edgePresentation(edge, metrics, focus, impactDeltas, problemPaths);
+        const isHovered = hoveredEdgeKey === relationKey;
+        const ports = getSmartMetricPorts(
+          fromMetric.position,
+          fromMetric.behavior,
+          toMetric.position,
+          toMetric.behavior,
+        );
+        const { x: x1, y: y1 } = ports.source.point;
+        const { x: x2, y: y2 } = ports.target.point;
+        const path = getConnectionPath(
+          ports.source.point,
+          ports.target.point,
+          ports.source.side,
+          ports.target.side,
+          lineStyle,
+          safeScale,
+        );
+        const targetVector = getPortSideVector(ports.target.side);
+        const operatorX = x2 + targetVector.x * 17 / safeScale;
+        const operatorY = y2 + targetVector.y * 17 / safeScale;
+        const screenWidth = isHovered ? Math.max(presentation.screenWidth + 0.75, 3.25) : presentation.screenWidth;
+        const strokeWidth = screenWidth / safeScale;
+        const dashArray = presentation.dash?.map((value) => value / safeScale).join(' ');
+        const labelX = (x1 + x2) / 2;
+        const labelY = (y1 + y2) / 2 - 16 / safeScale;
+        const labelWidth = Math.min(260, Math.max(118, presentation.label.length * 6.2 + 18)) / safeScale;
+        const labelHeight = 24 / safeScale;
+        const labelFontSize = 10.5 / safeScale;
+        const showPorts = isHovered || focus.relevantEdges.has(relationKey);
 
         return (
-          <path
-            key={key}
-            d={d}
-            fill="none"
-            stroke={highlighted && impactActive ? 'var(--primary)' : 'var(--border)'}
-            strokeWidth={highlighted && impactActive ? 2.5 : 1.5}
-            strokeDasharray={edge.type === 'influence' ? '6 4' : 'none'}
-            opacity={highlighted && impactActive ? 1 : 0.6}
-            markerEnd={highlighted && impactActive ? 'url(#arrow-highlight)' : 'url(#arrow-default)'}
-          />
+          <g key={renderKey} data-edge-key={relationKey}>
+            <path
+              d={path}
+              fill="none"
+              stroke={presentation.color}
+              strokeWidth={strokeWidth}
+              strokeDasharray={dashArray}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              opacity={isHovered ? 1 : presentation.opacity}
+              markerEnd={`url(#edge-arrow-${presentation.markerId})`}
+              style={{ transition: 'opacity 140ms ease, stroke 140ms ease, stroke-width 140ms ease' }}
+            />
+            {showPorts ? (
+              <>
+                <circle cx={x1} cy={y1} r={3.25 / safeScale} fill={presentation.color} opacity={isHovered ? 1 : 0.85} />
+                <circle cx={x2} cy={y2} r={3.25 / safeScale} fill={presentation.color} opacity={isHovered ? 1 : 0.85} />
+              </>
+            ) : null}
+            {edge.type === 'influence' && presentation.opacity > 0.2 ? (
+              <g transform={`translate(${operatorX} ${operatorY})`}>
+                <circle r={7 / safeScale} fill="#ffffff" stroke={presentation.color} strokeWidth={1.5 / safeScale} />
+                <text
+                  x={0}
+                  y={3.5 / safeScale}
+                  textAnchor="middle"
+                  fill={presentation.color}
+                  fontSize={10 / safeScale}
+                  fontWeight={700}
+                >
+                  {edge.sign >= 0 ? '+' : '−'}
+                </text>
+              </g>
+            ) : null}
+            {edge.type === 'calc' && presentation.operator && presentation.opacity > 0.2 ? (
+              <g transform={`translate(${operatorX} ${operatorY})`}>
+                <circle
+                  r={7.5 / safeScale}
+                  fill="#ffffff"
+                  stroke={presentation.color}
+                  strokeWidth={1.5 / safeScale}
+                  opacity={0.98}
+                />
+                <text
+                  x={0}
+                  y={3.6 / safeScale}
+                  textAnchor="middle"
+                  fill={presentation.color}
+                  fontSize={10.5 / safeScale}
+                  fontWeight={750}
+                >
+                  {presentation.operator}
+                </text>
+              </g>
+            ) : null}
+            {isHovered ? (
+              <g>
+                <rect
+                  x={labelX - labelWidth / 2}
+                  y={labelY - labelHeight / 2}
+                  width={labelWidth}
+                  height={labelHeight}
+                  rx={7 / safeScale}
+                  fill="#ffffff"
+                  stroke={presentation.color}
+                  strokeWidth={1.25 / safeScale}
+                  opacity={0.98}
+                />
+                <text
+                  x={labelX}
+                  y={labelY + 3.5 / safeScale}
+                  textAnchor="middle"
+                  fill="#334155"
+                  fontSize={labelFontSize}
+                  fontWeight={600}
+                >
+                  {presentation.label}
+                </text>
+              </g>
+            ) : null}
+            <path
+              d={path}
+              fill="none"
+              stroke="transparent"
+              strokeWidth={16 / safeScale}
+              pointerEvents="stroke"
+              onPointerEnter={() => onHoveredEdgeChange(edge)}
+              onPointerLeave={() => onHoveredEdgeChange(null)}
+            >
+              <title>{presentation.label}</title>
+            </path>
+          </g>
         );
       })}
     </svg>
   );
-}
+});

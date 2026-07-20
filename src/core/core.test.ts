@@ -4,6 +4,7 @@ import { computeGraphFocus, computeImpact, computeTokBeriThresholds } from './an
 import { createBlankModel } from './builder';
 import {
   breakdownChildMetricIds,
+  collapsedBreakdownMetricIds,
   convertMetricBreakdownTemplate,
   metricBreakdownInputFromFormula,
   removeMetricBreakdown,
@@ -241,7 +242,14 @@ describe('minimal cash-flow starter model', () => {
       to: 'work_tools_cost',
       operation: 'multiply',
     }));
+    expect(collapsedBreakdownMetricIds(withSharedDeveloperCount).has(developerCountId)).toBe(true);
     expect(validateModelDocument(withSharedDeveloperCount)).toMatchObject({ ok: true });
+
+    const withExpandedTools = toggleMetricBreakdown(
+      withSharedDeveloperCount,
+      'work_tools_cost',
+    );
+    expect(collapsedBreakdownMetricIds(withExpandedTools).has(developerCountId)).toBe(false);
 
     const withoutPayrollTable = removeMetricBreakdown(
       withSharedDeveloperCount,
@@ -249,6 +257,10 @@ describe('minimal cash-flow starter model', () => {
       200_000,
     );
     expect(withoutPayrollTable.metrics[developerCountId]).toBeDefined();
+    expect(collapsedBreakdownMetricIds(withoutPayrollTable).has(developerCountId)).toBe(true);
+    expect(collapsedBreakdownMetricIds(
+      toggleMetricBreakdown(withoutPayrollTable, 'work_tools_cost'),
+    ).has(developerCountId)).toBe(false);
     expect(validateModelDocument(withoutPayrollTable)).toMatchObject({ ok: true });
   });
 

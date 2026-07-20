@@ -3,7 +3,9 @@ export { createBlankModel } from '../../core/builder';
 export {
   allBreakdownChildMetricIds,
   breakdownChildMetricIds,
+  breakdownSourceMetricIds,
   canHaveMetricBreakdown,
+  collapsedBreakdownMetricIds,
   convertMetricBreakdownTemplate,
   metricBreakdownInputFromFormula,
   removeMetricBreakdown,

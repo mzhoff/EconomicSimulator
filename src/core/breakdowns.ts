@@ -220,10 +220,62 @@ export function breakdownChildMetricIds(breakdown: MetricBreakdownDef): string[]
   ].filter((metricId): metricId is string => Boolean(metricId)));
 }
 
+export function breakdownSourceMetricIds(breakdown: MetricBreakdownDef): string[] {
+  return [...new Set(breakdown.rows.flatMap((row) => [
+    row.amountSourceMetricId,
+    row.quantitySourceMetricId,
+    row.rateSourceMetricId,
+  ].filter((metricId): metricId is string => Boolean(metricId))))];
+}
+
 export function allBreakdownChildMetricIds(model: ModelState): Set<string> {
   return new Set(
     Object.values(model.breakdowns ?? {}).flatMap(breakdownChildMetricIds),
   );
+}
+
+export function collapsedBreakdownMetricIds(model: ModelState): Set<string> {
+  const breakdowns = Object.values(model.breakdowns ?? {});
+  const hiddenOwnedMetricIds = new Set<string>();
+  const hiddenSourceMetricIds = new Set<string>();
+  const requiredByExpandedBreakdown = new Set<string>();
+  const requiredOutsideBreakdowns = new Set<string>();
+  const breakdownResultMetricIds = new Set(
+    breakdowns.map((breakdown) => breakdown.resultMetricId),
+  );
+
+  for (const breakdown of breakdowns) {
+    if (breakdown.expanded) {
+      requiredByExpandedBreakdown.add(breakdown.resultMetricId);
+      breakdownChildMetricIds(breakdown)
+        .forEach((metricId) => requiredByExpandedBreakdown.add(metricId));
+      breakdownSourceMetricIds(breakdown)
+        .forEach((metricId) => requiredByExpandedBreakdown.add(metricId));
+      continue;
+    }
+
+    breakdownChildMetricIds(breakdown)
+      .forEach((metricId) => hiddenOwnedMetricIds.add(metricId));
+    breakdownSourceMetricIds(breakdown)
+      .forEach((metricId) => hiddenSourceMetricIds.add(metricId));
+  }
+
+  for (const metric of Object.values(model.metrics)) {
+    if (!metric.formula || breakdownResultMetricIds.has(metric.id)) continue;
+    extractDependencies(metric.formula.ast)
+      .forEach((metricId) => requiredOutsideBreakdowns.add(metricId));
+  }
+
+  for (const metricId of requiredByExpandedBreakdown) {
+    hiddenOwnedMetricIds.delete(metricId);
+    hiddenSourceMetricIds.delete(metricId);
+  }
+  for (const metricId of requiredOutsideBreakdowns) {
+    hiddenSourceMetricIds.delete(metricId);
+  }
+  hiddenSourceMetricIds.delete(model.activeNorthStarId);
+
+  return new Set([...hiddenOwnedMetricIds, ...hiddenSourceMetricIds]);
 }
 
 export function canHaveMetricBreakdown(metric: MetricDef | undefined): boolean {

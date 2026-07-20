@@ -22,6 +22,7 @@ import {
   autoLayout,
   breakdownChildMetricIds,
   canHaveMetricBreakdown,
+  collapsedBreakdownMetricIds,
   computeGraphFocus,
   computeImpact,
   computeTokBeriThresholds,
@@ -382,17 +383,12 @@ export default function App() {
   );
   const calculationRelations = useMemo(() => getCalculationRelations(model), [model]);
   const hiddenMetricIds = useMemo(() => {
-    const hidden = new Set<string>();
+    const hidden = collapsedBreakdownMetricIds(model);
     for (const group of Object.values(model.visualGroups)) {
       if (group.collapsed) group.metricIds.forEach((id) => hidden.add(id));
     }
-    for (const breakdown of Object.values(model.breakdowns ?? {})) {
-      if (!breakdown.expanded) {
-        breakdownChildMetricIds(breakdown).forEach((id) => hidden.add(id));
-      }
-    }
     return hidden;
-  }, [model.breakdowns, model.visualGroups]);
+  }, [model]);
   const allEdges = useMemo(
     () => [...calculationRelations, ...model.influenceRelations]
       .filter((edge) => !hiddenMetricIds.has(edge.from) && !hiddenMetricIds.has(edge.to)),

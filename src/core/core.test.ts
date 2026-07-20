@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import fixture from './fixtures/tokberi-base-station.json';
 import { computeGraphFocus, computeImpact, computeTokBeriThresholds } from './analysis';
+import { ref } from './ast';
 import { createBlankModel } from './builder';
 import {
   breakdownChildMetricIds,
@@ -170,6 +171,77 @@ describe('minimal cash-flow starter model', () => {
     expect(validateModelDocument(removed)).toMatchObject({ ok: true });
   });
 
+  it('supports nested breakdowns and collapses them as a metric tree', () => {
+    const source = createCashFlowModel();
+    const withInfrastructureRows = upsertMetricBreakdown(source, 'infrastructure_cost', {
+      template: 'amount_list',
+      rows: [
+        { id: 'cloud', name: 'Облачная инфраструктура', comment: '', amount: 15_000 },
+        { id: 'land', name: 'Наземная инфраструктура', comment: '', amount: 800 },
+      ],
+    });
+    const infrastructureBreakdown = withInfrastructureRows.breakdowns!.infrastructure_cost;
+    const cloudMetricId = infrastructureBreakdown.rows[0].amountMetricId!;
+    const landMetricId = infrastructureBreakdown.rows[1].amountMetricId!;
+    const withNestedCloud = upsertMetricBreakdown(withInfrastructureRows, cloudMetricId, {
+      template: 'amount_list',
+      rows: [
+        { id: 'compute', name: 'Вычисления', comment: '', amount: 10_000 },
+        { id: 'storage', name: 'Хранение данных', comment: '', amount: 5_000 },
+      ],
+    });
+    const cloudChildMetricIds = breakdownChildMetricIds(
+      withNestedCloud.breakdowns![cloudMetricId],
+    );
+
+    expect(evaluateModel(withNestedCloud).metrics[cloudMetricId].value).toBeCloseTo(15_000);
+    expect(evaluateModel(withNestedCloud).metrics.infrastructure_cost.value).toBeCloseTo(15_800);
+    expect(validateModelDocument(withNestedCloud)).toMatchObject({ ok: true });
+
+    const parentExpanded = toggleMetricBreakdown(withNestedCloud, 'infrastructure_cost');
+    const parentExpandedHidden = collapsedBreakdownMetricIds(parentExpanded);
+    expect(parentExpandedHidden.has(cloudMetricId)).toBe(false);
+    expect(parentExpandedHidden.has(landMetricId)).toBe(false);
+    expect(cloudChildMetricIds.every((metricId) => parentExpandedHidden.has(metricId))).toBe(true);
+
+    const bothExpanded = toggleMetricBreakdown(parentExpanded, cloudMetricId);
+    const bothExpandedHidden = collapsedBreakdownMetricIds(bothExpanded);
+    expect(cloudChildMetricIds.every((metricId) => !bothExpandedHidden.has(metricId))).toBe(true);
+
+    const parentCollapsedAgain = toggleMetricBreakdown(bothExpanded, 'infrastructure_cost');
+    const parentCollapsedHidden = collapsedBreakdownMetricIds(parentCollapsedAgain);
+    expect(parentCollapsedHidden.has(cloudMetricId)).toBe(true);
+    expect(parentCollapsedHidden.has(landMetricId)).toBe(true);
+    expect(cloudChildMetricIds.every((metricId) => parentCollapsedHidden.has(metricId))).toBe(true);
+
+    const reopenedTree = toggleMetricBreakdown(parentCollapsedAgain, 'infrastructure_cost');
+    const reopenedHidden = collapsedBreakdownMetricIds(reopenedTree);
+    expect(reopenedHidden.has(cloudMetricId)).toBe(false);
+    expect(cloudChildMetricIds.every((metricId) => !reopenedHidden.has(metricId))).toBe(true);
+
+    const evaluated = evaluateModel(withNestedCloud);
+    const parentEdited = upsertMetricBreakdown(
+      withNestedCloud,
+      'infrastructure_cost',
+      {
+        template: 'amount_list',
+        rows: infrastructureBreakdown.rows.map((row) => {
+          const amountMetricId = row.amountMetricId!;
+          return {
+            id: row.id,
+            name: row.name,
+            comment: row.comment,
+            amount: evaluated.metrics[amountMetricId].value ?? 0,
+          };
+        }),
+      },
+    );
+    expect(parentEdited.breakdowns?.[cloudMetricId]).toBeDefined();
+    expect(parentEdited.metrics[cloudMetricId].formula).toBeDefined();
+    expect(evaluateModel(parentEdited).metrics.infrastructure_cost.value).toBeCloseTo(15_800);
+    expect(validateModelDocument(parentEdited)).toMatchObject({ ok: true });
+  });
+
   it('preserves quantity when switching a breakdown through the amount view', () => {
     const quantityRate = {
       template: 'quantity_rate' as const,
@@ -244,6 +316,26 @@ describe('minimal cash-flow starter model', () => {
     }));
     expect(collapsedBreakdownMetricIds(withSharedDeveloperCount).has(developerCountId)).toBe(true);
     expect(validateModelDocument(withSharedDeveloperCount)).toMatchObject({ ok: true });
+
+    const withDerivedTeamCounter = structuredClone(withSharedDeveloperCount);
+    withDerivedTeamCounter.metrics.team_count = {
+      ...withDerivedTeamCounter.metrics[developerCountId],
+      id: 'team_count',
+      definitionId: 'team_count',
+      name: 'Количество разработчиков',
+      alias: 'team_count',
+      value: null,
+      valueSource: 'derived',
+      knowledgeStatus: 'derived',
+      kind: 'derived',
+      role: 'intermediate',
+      formula: {
+        source: withDerivedTeamCounter.metrics[developerCountId].alias,
+        ast: ref(developerCountId),
+      },
+      position: { x: 0, y: 0 },
+    };
+    expect(collapsedBreakdownMetricIds(withDerivedTeamCounter).has(developerCountId)).toBe(true);
 
     const withExpandedTools = toggleMetricBreakdown(
       withSharedDeveloperCount,

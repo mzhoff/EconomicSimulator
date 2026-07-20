@@ -12,7 +12,6 @@ import {
 } from 'lucide-react';
 import {
   behaviorLabel,
-  allBreakdownChildMetricIds,
   canHaveMetricBreakdown,
   fmt,
   getCalculationRelations,
@@ -112,11 +111,8 @@ export function InspectorPanel({
   const isCashFlowModel = Boolean(model.metrics.total_revenue && model.metrics.total_cost && model.metrics.profit);
   const summaryMetrics = isCashFlowModel ? cashFlowSummaryMetrics : stationSummaryMetrics;
   const selectedBreakdown = selected ? model.breakdowns?.[selected.id] : undefined;
-  const selectedIsBreakdownChild = selected
-    ? allBreakdownChildMetricIds(model).has(selected.id)
-    : false;
   const canManageBreakdown = Boolean(
-    selected && !selectedIsBreakdownChild && canHaveMetricBreakdown(selected),
+    selected && canHaveMetricBreakdown(selected),
   );
 
   return (

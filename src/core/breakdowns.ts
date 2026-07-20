@@ -236,48 +236,66 @@ export function allBreakdownChildMetricIds(model: ModelState): Set<string> {
 
 export function collapsedBreakdownMetricIds(model: ModelState): Set<string> {
   const breakdowns = Object.values(model.breakdowns ?? {});
-  const hiddenOwnedMetricIds = new Set<string>();
-  const hiddenSourceMetricIds = new Set<string>();
-  const requiredByExpandedBreakdown = new Set<string>();
-  const requiredOutsideBreakdowns = new Set<string>();
+  const ownedMetricIds = new Set(
+    breakdowns.flatMap(breakdownChildMetricIds),
+  );
+  const sourceMetricIds = new Set(
+    breakdowns.flatMap(breakdownSourceMetricIds),
+  );
+  const conditionallyVisibleMetricIds = new Set([
+    ...ownedMetricIds,
+    ...sourceMetricIds,
+  ]);
   const breakdownResultMetricIds = new Set(
     breakdowns.map((breakdown) => breakdown.resultMetricId),
   );
+  const visibleMetricIds = new Set(
+    Object.keys(model.metrics).filter(
+      (metricId) => !conditionallyVisibleMetricIds.has(metricId),
+    ),
+  );
 
-  for (const breakdown of breakdowns) {
-    if (breakdown.expanded) {
-      requiredByExpandedBreakdown.add(breakdown.resultMetricId);
-      breakdownChildMetricIds(breakdown)
-        .forEach((metricId) => requiredByExpandedBreakdown.add(metricId));
-      breakdownSourceMetricIds(breakdown)
-        .forEach((metricId) => requiredByExpandedBreakdown.add(metricId));
-      continue;
+  for (const resultMetricId of breakdownResultMetricIds) {
+    if (!ownedMetricIds.has(resultMetricId)) {
+      visibleMetricIds.add(resultMetricId);
     }
-
-    breakdownChildMetricIds(breakdown)
-      .forEach((metricId) => hiddenOwnedMetricIds.add(metricId));
-    breakdownSourceMetricIds(breakdown)
-      .forEach((metricId) => hiddenSourceMetricIds.add(metricId));
   }
 
   for (const metric of Object.values(model.metrics)) {
     if (!metric.formula || breakdownResultMetricIds.has(metric.id)) continue;
     extractDependencies(metric.formula.ast)
-      .forEach((metricId) => requiredOutsideBreakdowns.add(metricId));
-  }
-
-  for (const metricId of requiredByExpandedBreakdown) {
-    hiddenOwnedMetricIds.delete(metricId);
-    hiddenSourceMetricIds.delete(metricId);
-  }
-  for (const metricId of requiredOutsideBreakdowns) {
-    hiddenSourceMetricIds.delete(metricId);
+      .forEach((metricId) => {
+        if (!ownedMetricIds.has(metricId)) {
+          visibleMetricIds.add(metricId);
+        }
+      });
   }
   if (model.activeNorthStarId) {
-    hiddenSourceMetricIds.delete(model.activeNorthStarId);
+    visibleMetricIds.add(model.activeNorthStarId);
   }
 
-  return new Set([...hiddenOwnedMetricIds, ...hiddenSourceMetricIds]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const breakdown of breakdowns) {
+      if (!breakdown.expanded || !visibleMetricIds.has(breakdown.resultMetricId)) continue;
+      for (const metricId of [
+        ...breakdownChildMetricIds(breakdown),
+        ...breakdownSourceMetricIds(breakdown),
+      ]) {
+        if (!visibleMetricIds.has(metricId)) {
+          visibleMetricIds.add(metricId);
+          changed = true;
+        }
+      }
+    }
+  }
+
+  return new Set(
+    [...conditionallyVisibleMetricIds].filter(
+      (metricId) => !visibleMetricIds.has(metricId),
+    ),
+  );
 }
 
 export function canHaveMetricBreakdown(metric: MetricDef | undefined): boolean {
@@ -305,7 +323,9 @@ function removeOwnedMetrics(
     }
   }
   const removableMetricIds = new Set(
-    [...metricIds].filter((metricId) => !externallyReferenced.has(metricId)),
+    [...metricIds].filter(
+      (metricId) => !externallyReferenced.has(metricId) && !model.breakdowns?.[metricId],
+    ),
   );
   if (removableMetricIds.size === 0) return model;
   const metrics = Object.fromEntries(
@@ -367,7 +387,28 @@ export function upsertMetricBreakdown(
   const oldBreakdown = sourceModel.breakdowns?.[resultMetricId];
   const oldRows = new Map(oldBreakdown?.rows.map((row) => [row.id, row]) ?? []);
   const oldMetricIds = new Set(oldBreakdown ? breakdownChildMetricIds(oldBreakdown) : []);
-  let model = removeOwnedMetrics(sourceModel, oldMetricIds, resultMetricId);
+  const reusedMetricIds = new Set<string>();
+  if (oldBreakdown?.template === input.template) {
+    for (const rowInput of input.rows) {
+      const previous = oldRows.get(rowInput.id);
+      if (!previous) continue;
+      if (input.template === 'amount_list' && !rowInput.amountSourceMetricId) {
+        if (previous.amountMetricId) reusedMetricIds.add(previous.amountMetricId);
+      }
+      if (input.template === 'quantity_rate') {
+        if (!rowInput.quantitySourceMetricId && previous.quantityMetricId) {
+          reusedMetricIds.add(previous.quantityMetricId);
+        }
+        if (!rowInput.rateSourceMetricId && previous.rateMetricId) {
+          reusedMetricIds.add(previous.rateMetricId);
+        }
+      }
+    }
+  }
+  const obsoleteMetricIds = new Set(
+    [...oldMetricIds].filter((metricId) => !reusedMetricIds.has(metricId)),
+  );
+  let model = removeOwnedMetrics(sourceModel, obsoleteMetricIds, resultMetricId);
   const metrics = { ...model.metrics };
   const rows: MetricBreakdownRowDef[] = [];
   const terms = [];
@@ -410,20 +451,28 @@ export function upsertMetricBreakdown(
         const id = previous?.amountMetricId ?? `breakdown-${resultMetricId}-${rowInput.id}-amount`;
         const existing = sourceModel.metrics[id];
         const alias = existing?.alias ?? uniqueAlias(`${aliasBase}_amount`, metrics, id);
-        metrics[id] = childMetric(parent, {
-          id,
-          definitionSuffix: `${rowInput.id}.amount`,
-          name: row.name,
-          alias,
-          value: Math.max(0, finiteOr(rowInput.amount, 0)),
-          behavior: parent.behavior,
-          unit: parent.unit,
-          position: existing?.position ?? {
-            x: startX + childIndex * spacing - 136,
-            y: parent.position.y + 260,
-          },
-          integer: parent.inputConfig?.integer,
-        });
+        metrics[id] = existing && sourceModel.breakdowns?.[id]
+          ? {
+            ...existing,
+            name: row.name,
+            description: `Позиция в составе метрики «${parent.name}».`,
+            domain: parent.domain,
+            domainIds: [...parent.domainIds],
+          }
+          : childMetric(parent, {
+            id,
+            definitionSuffix: `${rowInput.id}.amount`,
+            name: row.name,
+            alias,
+            value: Math.max(0, finiteOr(rowInput.amount, 0)),
+            behavior: parent.behavior,
+            unit: parent.unit,
+            position: existing?.position ?? {
+              x: startX + childIndex * spacing - 136,
+              y: parent.position.y + 260,
+            },
+            integer: parent.inputConfig?.integer,
+          });
         childIndex += 1;
         row.amountMetricId = id;
         terms.push(ref(id));
@@ -445,21 +494,30 @@ export function upsertMetricBreakdown(
         quantityId = previous?.quantityMetricId
           ?? `breakdown-${resultMetricId}-${rowInput.id}-quantity`;
         const existingQuantity = sourceModel.metrics[quantityId];
-        metrics[quantityId] = childMetric(parent, {
-          id: quantityId,
-          definitionSuffix: `${rowInput.id}.quantity`,
-          name: `${row.name}: количество`,
-          alias: existingQuantity?.alias
-            ?? uniqueAlias(`${aliasBase}_quantity`, metrics, quantityId),
-          value: Math.max(0, finiteOr(rowInput.quantity, 1)),
-          behavior: 'stock',
-          unit: PERSON,
-          position: existingQuantity?.position ?? {
-            x: startX + childIndex * spacing - 136,
-            y: parent.position.y + 260,
-          },
-          integer: true,
-        });
+        const quantityName = `${row.name}: количество`;
+        metrics[quantityId] = existingQuantity && sourceModel.breakdowns?.[quantityId]
+          ? {
+            ...existingQuantity,
+            name: quantityName,
+            description: `Позиция в составе метрики «${parent.name}».`,
+            domain: parent.domain,
+            domainIds: [...parent.domainIds],
+          }
+          : childMetric(parent, {
+            id: quantityId,
+            definitionSuffix: `${rowInput.id}.quantity`,
+            name: quantityName,
+            alias: existingQuantity?.alias
+              ?? uniqueAlias(`${aliasBase}_quantity`, metrics, quantityId),
+            value: Math.max(0, finiteOr(rowInput.quantity, 1)),
+            behavior: 'stock',
+            unit: PERSON,
+            position: existingQuantity?.position ?? {
+              x: startX + childIndex * spacing - 136,
+              y: parent.position.y + 260,
+            },
+            integer: true,
+          });
         childIndex += 1;
         row.quantityMetricId = quantityId;
       }
@@ -480,20 +538,29 @@ export function upsertMetricBreakdown(
         rateId = previous?.rateMetricId
           ?? `breakdown-${resultMetricId}-${rowInput.id}-rate`;
         const existingRate = sourceModel.metrics[rateId];
-        metrics[rateId] = childMetric(parent, {
-          id: rateId,
-          definitionSuffix: `${rowInput.id}.rate`,
-          name: `${row.name}: ставка`,
-          alias: existingRate?.alias
-            ?? uniqueAlias(`${aliasBase}_monthly_rate`, metrics, rateId),
-          value: Math.max(0, finiteOr(rowInput.rate, 0)),
-          behavior: 'rate',
-          unit: RUB_PER_PERSON_MONTH,
-          position: existingRate?.position ?? {
-            x: startX + childIndex * spacing - 112,
-            y: parent.position.y + 284,
-          },
-        });
+        const rateName = `${row.name}: ставка`;
+        metrics[rateId] = existingRate && sourceModel.breakdowns?.[rateId]
+          ? {
+            ...existingRate,
+            name: rateName,
+            description: `Позиция в составе метрики «${parent.name}».`,
+            domain: parent.domain,
+            domainIds: [...parent.domainIds],
+          }
+          : childMetric(parent, {
+            id: rateId,
+            definitionSuffix: `${rowInput.id}.rate`,
+            name: rateName,
+            alias: existingRate?.alias
+              ?? uniqueAlias(`${aliasBase}_monthly_rate`, metrics, rateId),
+            value: Math.max(0, finiteOr(rowInput.rate, 0)),
+            behavior: 'rate',
+            unit: RUB_PER_PERSON_MONTH,
+            position: existingRate?.position ?? {
+              x: startX + childIndex * spacing - 112,
+              y: parent.position.y + 284,
+            },
+          });
         childIndex += 1;
         row.rateMetricId = rateId;
       }

@@ -592,10 +592,6 @@ export default function App() {
   }, [scenarioId]);
 
   const openBreakdownEditor = useCallback((id: string) => {
-    if (allBreakdownChildMetricIds(model).has(id)) {
-      setNotice('Внутреннюю строку состава нельзя дополнительно сворачивать в другую таблицу.');
-      return;
-    }
     if (!canHaveMetricBreakdown(model.metrics[id])) {
       setNotice('Табличный состав можно создать для вводимой метрики или формулы, состоящей только из суммы метрик.');
       return;
@@ -1757,7 +1753,7 @@ export default function App() {
               Открыть формулу
             </button>
           ) : null}
-          {canHaveMetricBreakdown(model.metrics[metricMenu.id]) && !allBreakdownChildMetricIds(model).has(metricMenu.id) ? (
+          {canHaveMetricBreakdown(model.metrics[metricMenu.id]) ? (
             <button onClick={() => openBreakdownEditor(metricMenu.id)} className="context-action">
               {model.breakdowns?.[metricMenu.id] ? 'Открыть состав метрики' : 'Создать состав метрики'}
             </button>

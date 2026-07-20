@@ -25,6 +25,7 @@ const moneyFormatter = new Intl.NumberFormat('ru-RU', {
   currency: 'RUB',
   maximumFractionDigits: 2,
 });
+const MONEY_INPUT_STEP = 0.01;
 
 function nextRowId(): string {
   if (typeof globalThis.crypto?.randomUUID === 'function') {
@@ -223,7 +224,7 @@ function MetricBreakdownEditorContent({
                   <NumberCell
                     label={`${draft.template === 'amount_list' ? 'Сумма' : 'Ставка'} для ${row.name}`}
                     value={draft.template === 'amount_list' ? row.amount ?? 0 : row.rate ?? 0}
-                    step={draft.template === 'amount_list' ? 100 : 1000}
+                    step={MONEY_INPUT_STEP}
                     onChange={(value) => updateRow(
                       row.id,
                       draft.template === 'amount_list' ? { amount: value } : { rate: value },

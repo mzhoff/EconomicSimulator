@@ -18,17 +18,24 @@ import {
 } from 'lucide-react';
 import {
   assertUniqueMetricAlias,
+  allBreakdownChildMetricIds,
   autoLayout,
+  breakdownChildMetricIds,
+  canHaveMetricBreakdown,
   computeGraphFocus,
   computeImpact,
   computeTokBeriThresholds,
   formatFormulaAst,
   getCalculationRelations,
   parseFormula,
+  removeMetricBreakdown,
+  toggleMetricBreakdown,
   unitFromPreset,
+  upsertMetricBreakdown,
   type DomainDef,
   type Edge,
   type MetricDef,
+  type MetricBreakdownInput,
   type ModelState,
   type Shock,
   type VisualGroupDef,
@@ -88,6 +95,7 @@ import {
   type VisualGroupDraft,
 } from './components/visual-group-dialog';
 import { CanvasContextMenu } from './components/canvas-context-menu';
+import { MetricBreakdownEditor } from './components/metric-breakdown-editor';
 
 const MIN_CONTENT_WIDTH = 1200;
 const MIN_CONTENT_HEIGHT = 800;
@@ -194,6 +202,8 @@ function unitPresetFor(metric: MetricDef): string {
   if (metric.unit.symbol === 'циклов/батарею') return 'cycles_per_powerbank';
   if (metric.unit.symbol === 'мес.') return 'months';
   if (metric.unit.symbol === 'дн.') return 'days';
+  if (metric.unit.symbol === 'чел.') return 'people';
+  if (metric.unit.symbol === '₽/чел./мес.') return 'rub_per_person_month';
   return 'ratio';
 }
 
@@ -253,6 +263,23 @@ function currentWorkspace(
   });
 }
 
+function sanitizeInputOverrides(
+  model: ModelState,
+  overridesByScenario: Record<string, Record<string, number>>,
+): Record<string, Record<string, number>> {
+  return Object.fromEntries(
+    Object.entries(overridesByScenario).map(([scenarioKey, overrides]) => [
+      scenarioKey,
+      Object.fromEntries(
+        Object.entries(overrides).filter(([metricId]) => {
+          const metric = model.metrics[metricId];
+          return Boolean(metric && !metric.formula);
+        }),
+      ),
+    ]),
+  );
+}
+
 export default function App() {
   const [initial] = useState(() => {
     const workspaceResult = loadWorkspace();
@@ -307,6 +334,7 @@ export default function App() {
     }
   });
   const [visualGroupEditor, setVisualGroupEditor] = useState<VisualGroupEditorState | null>(null);
+  const [breakdownEditorMetricId, setBreakdownEditorMetricId] = useState<string | null>(null);
 
   const { transform, setTransform, zoomIn, zoomOut, fitToView } = useCanvasControls(
     initial.workspace.viewport,
@@ -358,12 +386,23 @@ export default function App() {
     for (const group of Object.values(model.visualGroups)) {
       if (group.collapsed) group.metricIds.forEach((id) => hidden.add(id));
     }
+    for (const breakdown of Object.values(model.breakdowns ?? {})) {
+      if (!breakdown.expanded) {
+        breakdownChildMetricIds(breakdown).forEach((id) => hidden.add(id));
+      }
+    }
     return hidden;
-  }, [model.visualGroups]);
+  }, [model.breakdowns, model.visualGroups]);
   const allEdges = useMemo(
     () => [...calculationRelations, ...model.influenceRelations]
       .filter((edge) => !hiddenMetricIds.has(edge.from) && !hiddenMetricIds.has(edge.to)),
     [calculationRelations, hiddenMetricIds, model.influenceRelations],
+  );
+  const visibleEvaluationMetrics = useMemo(
+    () => Object.fromEntries(
+      Object.entries(evaluation.metrics).filter(([id]) => !hiddenMetricIds.has(id)),
+    ),
+    [evaluation.metrics, hiddenMetricIds],
   );
   const graphFocus = useMemo(
     () => computeGraphFocus(model, selectedIds, impactActive && impact ? impact.inputId : undefined),
@@ -383,17 +422,20 @@ export default function App() {
     [model.domains],
   );
   const contentSize = useMemo(() => {
-    const bounds = Object.values(model.metrics).map((metric) => getMetricCardBounds(metric.position, metric.behavior));
+    const bounds = Object.values(model.metrics)
+      .filter((metric) => !hiddenMetricIds.has(metric.id))
+      .map((metric) => getMetricCardBounds(metric.position, metric.behavior));
     return {
       width: Math.max(MIN_CONTENT_WIDTH, ...bounds.map((item) => item.right + 160)),
       height: Math.max(MIN_CONTENT_HEIGHT, ...bounds.map((item) => item.bottom + 160)),
     };
-  }, [model.metrics]);
+  }, [hiddenMetricIds, model.metrics]);
   const modelList = useMemo(
     () => Object.values(library.entries).map(({ workspace }) => ({
       id: workspace.model.id,
       name: workspace.model.name,
-      metricCount: Object.keys(workspace.model.metrics).length,
+      metricCount: Object.keys(workspace.model.metrics).length
+        - allBreakdownChildMetricIds(workspace.model).size,
     })),
     [library.entries],
   );
@@ -559,6 +601,57 @@ export default function App() {
     setInputOverridesByScenario((current) => ({ ...current, [scenarioId]: {} }));
   }, [scenarioId]);
 
+  const openBreakdownEditor = useCallback((id: string) => {
+    if (allBreakdownChildMetricIds(model).has(id)) {
+      setNotice('Внутреннюю строку состава нельзя дополнительно сворачивать в другую таблицу.');
+      return;
+    }
+    if (!canHaveMetricBreakdown(model.metrics[id])) {
+      setNotice('Табличный состав сейчас доступен для конечных денежных Flow-метрик без собственной формулы.');
+      return;
+    }
+    setBreakdownEditorMetricId(id);
+    setMetricMenu(null);
+  }, [model]);
+
+  const handleSaveBreakdown = useCallback((input: MetricBreakdownInput) => {
+    if (!breakdownEditorMetricId) return;
+    try {
+      const candidate = upsertMetricBreakdown(model, breakdownEditorMetricId, input);
+      topologicalOrder(candidate);
+      const checked = evaluateModel(candidate, scenarioId, currentOverrides);
+      const blocking = checked.errors.find((error) => error.metricId === breakdownEditorMetricId);
+      if (blocking) throw new Error(blocking.message);
+      commitModel(() => candidate);
+      setInputOverridesByScenario((current) => sanitizeInputOverrides(candidate, current));
+      setSelectedIds([breakdownEditorMetricId]);
+      setBreakdownEditorMetricId(null);
+      setNotice('Состав сохранён: итоговая метрика теперь рассчитывается из строк таблицы.');
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : 'Состав метрики не сохранён.');
+    }
+  }, [breakdownEditorMetricId, commitModel, currentOverrides, model, scenarioId]);
+
+  const handleToggleBreakdown = useCallback((id: string) => {
+    const breakdown = model.breakdowns?.[id];
+    if (!breakdown) return;
+    commitModel((current) => toggleMetricBreakdown(current, id));
+    if (breakdown.expanded) setSelectedIds([id]);
+    setMetricMenu(null);
+  }, [commitModel, model.breakdowns]);
+
+  const handleRemoveBreakdown = useCallback(() => {
+    if (!breakdownEditorMetricId) return;
+    const metric = evaluation.metrics[breakdownEditorMetricId];
+    if (!metric || !window.confirm('Удалить табличный состав и оставить текущий итог обычным вводимым значением?')) return;
+    const candidate = removeMetricBreakdown(model, breakdownEditorMetricId, metric.value ?? 0);
+    commitModel(() => candidate);
+    setInputOverridesByScenario((current) => sanitizeInputOverrides(candidate, current));
+    setBreakdownEditorMetricId(null);
+    setSelectedIds([breakdownEditorMetricId]);
+    setNotice('Состав удалён; текущий итог сохранён как обычное значение метрики.');
+  }, [breakdownEditorMetricId, commitModel, evaluation.metrics, model]);
+
   const handleToggleAll = useCallback(() => {
     if (allCollapsed) {
       setLeftOpen(true);
@@ -638,14 +731,22 @@ export default function App() {
       setNotice(`Нельзя удалить «${model.metrics[id]?.name}»: от неё зависят расчётные формулы.`);
       return;
     }
+    const ownedMetricIds = new Set([
+      id,
+      ...(model.breakdowns?.[id]
+        ? breakdownChildMetricIds(model.breakdowns[id])
+        : []),
+    ]);
     commitModel((current) => {
       if (!current.metrics[id]) return current;
       const metrics = { ...current.metrics };
-      delete metrics[id];
+      ownedMetricIds.forEach((metricId) => delete metrics[metricId]);
+      const breakdowns = { ...(current.breakdowns ?? {}) };
+      delete breakdowns[id];
       const scenarios = Object.fromEntries(
         Object.entries(current.scenarios).map(([scenarioKey, scenario]) => {
           const overrides = { ...scenario.overrides };
-          delete overrides[id];
+          ownedMetricIds.forEach((metricId) => delete overrides[metricId]);
           return [scenarioKey, { ...scenario, overrides }];
         }),
       );
@@ -653,7 +754,7 @@ export default function App() {
         Object.entries(current.visualGroups)
           .map(([groupId, group]) => [
             groupId,
-            { ...group, metricIds: group.metricIds.filter((metricId) => metricId !== id) },
+            { ...group, metricIds: group.metricIds.filter((metricId) => !ownedMetricIds.has(metricId)) },
           ])
           .filter(([, group]) => (group as VisualGroupDef).metricIds.length > 0),
       );
@@ -661,17 +762,24 @@ export default function App() {
         ...current,
         activeNorthStarId: current.activeNorthStarId === id ? null : current.activeNorthStarId,
         metrics,
+        breakdowns,
         domains: syncDomainMemberships(metrics, current.domains),
         scenarios,
         visualGroups,
         influenceRelations: current.influenceRelations.filter(
-          (relation) => relation.from !== id && relation.to !== id,
+          (relation) => !ownedMetricIds.has(relation.from) && !ownedMetricIds.has(relation.to),
         ),
       };
     });
+    setInputOverridesByScenario((current) => Object.fromEntries(
+      Object.entries(current).map(([scenarioKey, overrides]) => [
+        scenarioKey,
+        Object.fromEntries(Object.entries(overrides).filter(([metricId]) => !ownedMetricIds.has(metricId))),
+      ]),
+    ));
     setSelectedIds((current) => current.filter((metricId) => metricId !== id));
     setMetricMenu(null);
-  }, [calculationRelations, commitModel, model.metrics]);
+  }, [calculationRelations, commitModel, model.breakdowns, model.metrics]);
 
   const openCreateEditor = useCallback((createAt?: CanvasPoint) => {
     setEditor({ mode: 'create', createAt, draft: defaultMetricDraft() });
@@ -785,13 +893,16 @@ export default function App() {
       }
       const id = editor.metricId ?? createId('metric');
       const existing = editor.metricId ? model.metrics[editor.metricId] : undefined;
-      const unit = unitFromPreset(draft.unitPreset);
+      const managedByBreakdown = Boolean(existing && model.breakdowns?.[id]);
+      const unit = managedByBreakdown ? existing!.unit : unitFromPreset(draft.unitPreset);
       const value = toStoredValue(draft.value, draft.unitPreset);
       const min = toStoredValue(draft.min, draft.unitPreset);
       const max = toStoredValue(draft.max, draft.unitPreset);
-      const formula = draft.valueMode === 'formula'
-        ? parseFormula(draft.formulaSource, model.metrics)
-        : undefined;
+      const formula = managedByBreakdown
+        ? existing!.formula
+        : draft.valueMode === 'formula'
+          ? parseFormula(draft.formulaSource, model.metrics)
+          : undefined;
       const area = canvasAreaRef.current?.getBoundingClientRect();
       const cardSize = getMetricCardSize(draft.behavior);
       const existingMetrics = Object.values(model.metrics);
@@ -831,14 +942,14 @@ export default function App() {
         name: draft.name.trim(),
         alias: draft.alias.trim(),
         description: draft.description.trim() || 'Пользовательская метрика.',
-        behavior: draft.behavior,
+        behavior: managedByBreakdown ? existing!.behavior : draft.behavior,
         unit,
         valueSource: formula ? 'derived' : 'input',
         knowledgeStatus: formula ? 'derived' : 'assumption',
         kind: formula ? 'derived' : 'assumption',
         domain: existing?.domain ?? 'results',
         domainIds: [...new Set(draft.domainIds)],
-        role: formula ? 'intermediate' : 'input',
+        role: managedByBreakdown ? existing!.role : formula ? 'intermediate' : 'input',
         value: formula ? null : value,
         formula,
         validationStatus: 'valid',
@@ -1324,7 +1435,7 @@ export default function App() {
             onDelete={handleDeleteModel}
           />
           <span className="hidden rounded-full bg-secondary px-[0.5rem] py-[0.0625rem] text-[0.5625rem] text-muted-foreground xl:block" style={{ fontWeight: 500 }}>
-            {Object.keys(model.metrics).length} metrics · {calculationRelations.length} calc edges
+            {Object.values(model.metrics).filter((metric) => !hiddenMetricIds.has(metric.id)).length} metrics · {allEdges.filter((edge) => edge.type === 'calc').length} calc edges
           </span>
         </div>
 
@@ -1453,6 +1564,9 @@ export default function App() {
                   ? impact.deltas[metric.id]
                   : undefined}
                 impactActive={impactActive}
+                breakdown={model.breakdowns?.[metric.id]}
+                onOpenBreakdown={openBreakdownEditor}
+                onToggleBreakdown={handleToggleBreakdown}
               />
             ))}
           {connectionDraft ? (
@@ -1485,7 +1599,7 @@ export default function App() {
         <GraphModeIndicator focus={graphFocus} selectedCount={selectedIds.length} />
 
         <InputPanel
-          metrics={evaluation.metrics}
+          metrics={visibleEvaluationMetrics}
           domains={domains}
           collapsedDomainIds={collapsedDomainIds}
           onToggleDomain={handleToggleDomain}
@@ -1513,6 +1627,8 @@ export default function App() {
           onSelect={(id) => selectMetric(id)}
           onSetNorthStar={handleSetNorthStar}
           onChangeShock={setShock}
+          onOpenBreakdown={openBreakdownEditor}
+          onToggleBreakdown={handleToggleBreakdown}
         />
 
         <BottomToolbar
@@ -1573,6 +1689,19 @@ export default function App() {
           aliasError={editorAliasError}
           formulaError={editor?.draft.valueMode === 'formula' ? formulaPreview.errors[0] : undefined}
           formError={editorError ?? undefined}
+          managedByBreakdown={Boolean(editor?.metricId && model.breakdowns?.[editor.metricId])}
+        />
+
+        <MetricBreakdownEditor
+          open={Boolean(breakdownEditorMetricId)}
+          metric={breakdownEditorMetricId ? evaluation.metrics[breakdownEditorMetricId] ?? null : null}
+          breakdown={breakdownEditorMetricId ? model.breakdowns?.[breakdownEditorMetricId] : undefined}
+          metrics={evaluation.metrics}
+          onSave={handleSaveBreakdown}
+          onRemove={breakdownEditorMetricId && model.breakdowns?.[breakdownEditorMetricId]
+            ? handleRemoveBreakdown
+            : undefined}
+          onClose={() => setBreakdownEditorMetricId(null)}
         />
 
         <FormulaComposer
@@ -1633,9 +1762,21 @@ export default function App() {
           <button onClick={() => openEditEditor(metricMenu.id)} className="context-action">
             Редактировать метрику
           </button>
-          <button onClick={() => openEditEditor(metricMenu.id, true)} className="context-action">
-            Открыть формулу
-          </button>
+          {!model.breakdowns?.[metricMenu.id] ? (
+            <button onClick={() => openEditEditor(metricMenu.id, true)} className="context-action">
+              Открыть формулу
+            </button>
+          ) : null}
+          {canHaveMetricBreakdown(model.metrics[metricMenu.id]) && !allBreakdownChildMetricIds(model).has(metricMenu.id) ? (
+            <button onClick={() => openBreakdownEditor(metricMenu.id)} className="context-action">
+              {model.breakdowns?.[metricMenu.id] ? 'Открыть состав метрики' : 'Создать состав метрики'}
+            </button>
+          ) : null}
+          {model.breakdowns?.[metricMenu.id] ? (
+            <button onClick={() => handleToggleBreakdown(metricMenu.id)} className="context-action">
+              {model.breakdowns[metricMenu.id].expanded ? 'Свернуть состав' : 'Развернуть состав на Canvas'}
+            </button>
+          ) : null}
           {model.activeNorthStarId === metricMenu.id ? (
             <button
               onClick={() => {

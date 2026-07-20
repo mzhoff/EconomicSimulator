@@ -1,4 +1,5 @@
 import { createCashFlowModel } from './cash-flow-template';
+import { upgradeCashFlowPayrollBreakdown } from './breakdowns';
 import { MODEL_SCHEMA_VERSION } from './model';
 import type { ModelState, ViewportState, WorkspaceDocument } from './model';
 import {
@@ -13,6 +14,7 @@ export const LAST_VALID_STORAGE_KEY = 'economic-simulator:last-valid:v3';
 export const MIGRATION_BACKUP_KEY = 'economic-simulator:migration-backup:v2';
 export const BEHAVIOR_UPGRADE_BACKUP_KEY = 'economic-simulator:behavior-upgrade-backup:one-off';
 export const CASH_FLOW_RESET_BACKUP_KEY = 'economic-simulator:cash-flow-reset-backup:v2';
+export const BREAKDOWN_UPGRADE_BACKUP_KEY = 'economic-simulator:breakdown-upgrade-backup:v1';
 export const LEGACY_WORKSPACE_STORAGE_KEY = 'economic-simulator:workspace:v1';
 export const PREVIOUS_WORKSPACE_STORAGE_KEY = 'economic-simulator:workspace:v2';
 const PREVIOUS_WORKSPACE_STORAGE_KEYS = [
@@ -69,7 +71,9 @@ export function serializeWorkspace(workspace: WorkspaceDocument): string {
 export function importWorkspace(text: string): ReturnType<typeof parseWorkspaceJson> {
   const current = parseWorkspaceJson(text);
   if (current.ok) {
-    return validateWorkspaceDocument(upgradeOneOffBehaviors(current.workspace).workspace);
+    const oneOff = upgradeOneOffBehaviors(current.workspace);
+    const breakdown = upgradeCashFlowPayrollBreakdown(oneOff.workspace);
+    return validateWorkspaceDocument(breakdown.workspace);
   }
   try {
     const raw = JSON.parse(text) as unknown;
@@ -85,24 +89,30 @@ function upgradeStoredWorkspace(
   serialized: string,
   storage: Storage,
 ): StorageResult<WorkspaceDocument> {
-  const upgraded = upgradeOneOffBehaviors(workspace);
-  if (!upgraded.changed) return { value: workspace };
+  const oneOff = upgradeOneOffBehaviors(workspace);
+  const breakdown = upgradeCashFlowPayrollBreakdown(oneOff.workspace);
+  if (!oneOff.changed && !breakdown.changed) return { value: workspace };
 
-  const checked = validateWorkspaceDocument(upgraded.workspace);
+  const checked = validateWorkspaceDocument(breakdown.workspace);
   if (!checked.ok) {
     return {
       value: workspace,
-      warning: `One-off-миграция не применена: ${checked.issues[0]?.message ?? 'ошибка схемы'}`,
+      warning: `Обновление модели не применено: ${checked.issues[0]?.message ?? 'ошибка схемы'}`,
     };
   }
 
-  storage.setItem(BEHAVIOR_UPGRADE_BACKUP_KEY, serialized);
+  if (oneOff.changed) storage.setItem(BEHAVIOR_UPGRADE_BACKUP_KEY, serialized);
+  if (breakdown.changed) storage.setItem(BREAKDOWN_UPGRADE_BACKUP_KEY, serialized);
   const upgradedSerialized = serializeWorkspace(checked.workspace);
   storage.setItem(WORKSPACE_STORAGE_KEY, upgradedSerialized);
   storage.setItem(LAST_VALID_STORAGE_KEY, upgradedSerialized);
   return {
     value: checked.workspace,
-    warning: 'Доставка и монтаж обновлены до One-off; предыдущий JSON сохранён в backup.',
+    warning: [
+      oneOff.changed ? 'Доставка и монтаж обновлены до One-off.' : null,
+      breakdown.changed ? 'Фонд оплаты труда переведён в табличный состав.' : null,
+      'Предыдущий JSON сохранён в backup.',
+    ].filter(Boolean).join(' '),
   };
 }
 

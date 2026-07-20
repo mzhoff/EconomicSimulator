@@ -44,6 +44,7 @@ export interface NodeEditorProps {
   formError?: string;
   saving?: boolean;
   unitOptions?: UnitPresetOption[];
+  managedByBreakdown?: boolean;
 }
 
 const ALIAS_PATTERN = /^[a-z][a-z0-9_]*$/;
@@ -62,6 +63,8 @@ const DEFAULT_UNIT_OPTIONS: UnitPresetOption[] = [
   { value: 'cycles_per_powerbank', label: 'Циклы / батарею' },
   { value: 'months', label: 'Месяцы' },
   { value: 'days', label: 'Дни' },
+  { value: 'people', label: 'Люди' },
+  { value: 'rub_per_person_month', label: '₽ / человек / месяц' },
   { value: 'ratio', label: 'Безразмерная' },
 ];
 
@@ -118,6 +121,7 @@ export function NodeEditor({
   formError,
   saving = false,
   unitOptions = DEFAULT_UNIT_OPTIONS,
+  managedByBreakdown = false,
 }: NodeEditorProps) {
   if (!open) return null;
 
@@ -201,7 +205,12 @@ export function NodeEditor({
           }}
         >
           <div className="min-h-0 flex-1 overflow-y-auto px-[1.25rem] py-[1rem]">
-            <fieldset>
+            {managedByBreakdown ? (
+              <div className="mb-[1rem] rounded-[var(--radius-lg)] border border-violet-200 bg-violet-50/70 px-[0.75rem] py-[0.625rem] text-[0.6875rem] text-violet-800">
+                Значение и формула управляются таблицей состава. Здесь можно изменить название, alias, домены и описание.
+              </div>
+            ) : null}
+            <fieldset disabled={managedByBreakdown} className={managedByBreakdown ? 'opacity-60' : undefined}>
               <legend className="mb-[0.5rem] text-[0.6875rem] text-muted-foreground">
                 Тип метрики
               </legend>
@@ -276,6 +285,7 @@ export function NodeEditor({
                   <Field label="Единица измерения" required>
                     <select
                       value={draft.unitPreset}
+                      disabled={managedByBreakdown}
                       onChange={(event) => update('unitPreset', event.target.value)}
                       className="field-input cursor-pointer"
                     >
@@ -298,7 +308,7 @@ export function NodeEditor({
                   )}
                 </div>
 
-                <fieldset>
+                <fieldset disabled={managedByBreakdown} className={managedByBreakdown ? 'opacity-60' : undefined}>
                   <legend className="mb-[0.375rem] text-[0.6875rem] text-muted-foreground">
                     Значение
                   </legend>
@@ -344,7 +354,7 @@ export function NodeEditor({
                         Формула
                         <span className="text-red-500">*</span>
                       </label>
-                      {onOpenFormula ? (
+                      {onOpenFormula && !managedByBreakdown ? (
                         <button
                           type="button"
                           onClick={onOpenFormula}
@@ -358,6 +368,7 @@ export function NodeEditor({
                     <textarea
                       id="metric-formula-source"
                       value={draft.formulaSource}
+                      readOnly={managedByBreakdown}
                       onChange={(event) => update('formulaSource', event.target.value)}
                       rows={3}
                       spellCheck={false}
@@ -500,17 +511,20 @@ function ValueModeButton({
   icon,
   label,
   onClick,
+  disabled = false,
 }: {
   active: boolean;
   icon: ReactNode;
   label: string;
   onClick: () => void;
+  disabled?: boolean;
 }) {
   return (
     <button
       type="button"
       aria-pressed={active}
       onClick={onClick}
+      disabled={disabled}
       className={`flex items-center justify-center gap-[0.3125rem] rounded-[calc(var(--radius-lg)-2px)] px-[0.625rem] py-[0.4375rem] text-[0.6875rem] transition-all cursor-pointer ${
         active ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
       }`}

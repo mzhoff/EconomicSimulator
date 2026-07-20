@@ -2,13 +2,15 @@ import { useCallback, useRef } from 'react';
 import {
   Activity,
   Database,
+  GitBranch,
   Sparkles,
+  TableProperties,
   Ticket,
   Trash2,
   TrendingDown,
   TrendingUp,
 } from 'lucide-react';
-import type { MetricDef } from '../../core/model';
+import type { MetricBreakdownDef, MetricDef } from '../../core/model';
 import { behaviorLabel, fmt } from '../../core/presentation';
 import {
   getMetricCardSize,
@@ -54,6 +56,9 @@ interface MetricCardProps {
     event: React.PointerEvent<HTMLButtonElement>,
   ) => void;
   isNorthStar?: boolean;
+  breakdown?: MetricBreakdownDef;
+  onOpenBreakdown?: (id: string) => void;
+  onToggleBreakdown?: (id: string) => void;
 }
 
 export function MetricCard({
@@ -69,6 +74,9 @@ export function MetricCard({
   formulaSource,
   onConnectionPointerDown,
   isNorthStar = false,
+  breakdown,
+  onOpenBreakdown,
+  onToggleBreakdown,
 }: MetricCardProps) {
   const isInput = metric.kind !== 'derived';
   const hasDelta = delta !== undefined && Math.abs(delta) > 0.0001;
@@ -179,6 +187,38 @@ export function MetricCard({
               {metric.name}
             </span>
           </div>
+          {breakdown && onOpenBreakdown ? (
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                onOpenBreakdown(metric.id);
+              }}
+              className="flex size-[1.25rem] items-center justify-center rounded-[var(--radius-sm)] text-violet-600 hover:bg-violet-50 cursor-pointer"
+              title={`Открыть состав: ${breakdown.rows.length} позиций`}
+              aria-label={`Открыть состав метрики «${metric.name}»`}
+            >
+              <TableProperties className="size-[0.6875rem]" />
+            </button>
+          ) : null}
+          {breakdown && onToggleBreakdown ? (
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                onToggleBreakdown(metric.id);
+              }}
+              className={`flex size-[1.25rem] items-center justify-center rounded-[var(--radius-sm)] cursor-pointer ${
+                breakdown.expanded
+                  ? 'bg-violet-100 text-violet-700'
+                  : 'text-muted-foreground hover:bg-accent hover:text-foreground'
+              }`}
+              title={breakdown.expanded ? 'Свернуть состав' : 'Развернуть состав на Canvas'}
+              aria-label={breakdown.expanded ? `Свернуть состав метрики «${metric.name}»` : `Развернуть состав метрики «${metric.name}»`}
+            >
+              <GitBranch className="size-[0.6875rem]" />
+            </button>
+          ) : null}
           {onDelete && (
             <button
               onClick={(event) => {
@@ -223,6 +263,11 @@ export function MetricCard({
             <span className={`rounded-full bg-secondary text-muted-foreground px-[0.375rem] py-[0.0625rem] ${isRate ? 'text-[0.5rem]' : 'text-[0.5625rem]'}`}>
               {behaviorLabel(metric.behavior)}
             </span>
+            {breakdown ? (
+              <span className="rounded-full bg-violet-50 px-[0.375rem] py-[0.0625rem] text-[0.5625rem] text-violet-700">
+                {breakdown.rows.length} поз.
+              </span>
+            ) : null}
             {metric.validationStatus !== 'valid' && (
               <span className={`text-[0.5625rem] rounded-full px-[0.375rem] py-[0.0625rem] ${
                 metric.validationStatus === 'error' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'

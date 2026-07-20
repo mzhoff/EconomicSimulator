@@ -1,7 +1,9 @@
 import { topologicalOrder, validateFormula } from './evaluator';
+import { extractDependencies } from './ast';
 import { findDuplicateAliases, validateMetricAlias } from './formula-parser';
 import { MODEL_SCHEMA_VERSION } from './model';
 import type { FormulaNode, ModelState, ValidationIssue, WorkspaceDocument } from './model';
+import { PERSON, RUB, RUB_PER_PERSON_MONTH, unitsEqual } from './units';
 
 const metricBehaviors = new Set(['stock', 'flow', 'rate', 'one_off']);
 const metricKinds = new Set(['input', 'derived', 'observed', 'assumption']);
@@ -247,6 +249,57 @@ function validateModelShape(value: unknown, path: string, issues: ValidationIssu
     }
   }
 
+  if (value.breakdowns !== undefined) {
+    if (!isRecord(value.breakdowns)) {
+      issues.push({ path: `${path}.breakdowns`, message: 'Составы метрик должны быть объектом.' });
+    } else {
+      for (const [resultMetricId, rawBreakdown] of Object.entries(value.breakdowns)) {
+        const breakdownPath = `${path}.breakdowns.${resultMetricId}`;
+        if (!isRecord(rawBreakdown)) {
+          issues.push({ path: breakdownPath, message: 'Состав метрики должен быть объектом.' });
+          continue;
+        }
+        requireString(rawBreakdown, 'id', breakdownPath, issues);
+        requireString(rawBreakdown, 'resultMetricId', breakdownPath, issues);
+        if (rawBreakdown.resultMetricId !== resultMetricId) {
+          issues.push({ path: `${breakdownPath}.resultMetricId`, message: 'Ключ состава и resultMetricId должны совпадать.' });
+        }
+        if (!['amount_list', 'quantity_rate'].includes(String(rawBreakdown.template))) {
+          issues.push({ path: `${breakdownPath}.template`, message: 'Неизвестный шаблон состава.' });
+        }
+        if (typeof rawBreakdown.expanded !== 'boolean') {
+          issues.push({ path: `${breakdownPath}.expanded`, message: 'expanded должен быть boolean.' });
+        }
+        if (!Array.isArray(rawBreakdown.rows) || rawBreakdown.rows.length === 0) {
+          issues.push({ path: `${breakdownPath}.rows`, message: 'В составе должна быть хотя бы одна позиция.' });
+          continue;
+        }
+        const rowIds = new Set<string>();
+        rawBreakdown.rows.forEach((rawRow, index) => {
+          const rowPath = `${breakdownPath}.rows.${index}`;
+          if (!isRecord(rawRow)) {
+            issues.push({ path: rowPath, message: 'Позиция состава должна быть объектом.' });
+            return;
+          }
+          for (const key of ['id', 'name']) requireString(rawRow, key, rowPath, issues);
+          requireText(rawRow, 'comment', rowPath, issues);
+          if (typeof rawRow.id === 'string') {
+            if (rowIds.has(rawRow.id)) {
+              issues.push({ path: `${rowPath}.id`, message: 'ID позиции не должен повторяться.' });
+            }
+            rowIds.add(rawRow.id);
+          }
+          if (rawBreakdown.template === 'amount_list') {
+            requireString(rawRow, 'amountMetricId', rowPath, issues);
+          } else if (rawBreakdown.template === 'quantity_rate') {
+            requireString(rawRow, 'quantityMetricId', rowPath, issues);
+            requireString(rawRow, 'rateMetricId', rowPath, issues);
+          }
+        });
+      }
+    }
+  }
+
   if (!isRecord(value.scenarios) || !isRecord(value.scenarios.base)) {
     issues.push({ path: `${path}.scenarios`, message: 'Нужен сценарий base.' });
   } else {
@@ -329,6 +382,60 @@ function validateModelSemantics(model: ModelState, issues: ValidationIssue[]): v
       if (!model.metrics[metricId]) {
         issues.push({ path: `model.visualGroups.${group.id}.metricIds`, message: `Метрика «${metricId}» не существует.` });
       }
+    }
+  }
+  const claimedBreakdownMetrics = new Set<string>();
+  for (const breakdown of Object.values(model.breakdowns ?? {})) {
+    const parent = model.metrics[breakdown.resultMetricId];
+    if (!parent) {
+      issues.push({ path: `model.breakdowns.${breakdown.resultMetricId}`, message: 'Результирующая метрика состава не существует.' });
+      continue;
+    }
+    if (parent.behavior !== 'flow' || !unitsEqual(parent.unit, RUB)) {
+      issues.push({ path: `model.breakdowns.${breakdown.resultMetricId}`, message: 'Состав v1 поддерживает денежные Flow-метрики в рублях.' });
+    }
+    const childMetricIds = breakdown.rows.flatMap((row) => [
+      row.amountMetricId,
+      row.quantityMetricId,
+      row.rateMetricId,
+    ].filter((metricId): metricId is string => Boolean(metricId)));
+    for (const row of breakdown.rows) {
+      if (breakdown.template === 'amount_list') {
+        const amount = row.amountMetricId ? model.metrics[row.amountMetricId] : undefined;
+        if (amount && (amount.behavior !== 'flow' || !unitsEqual(amount.unit, RUB))) {
+          issues.push({ path: `model.breakdowns.${breakdown.resultMetricId}.rows.${row.id}`, message: 'Сумма позиции должна быть денежной Flow-метрикой.' });
+        }
+      } else {
+        const quantity = row.quantityMetricId ? model.metrics[row.quantityMetricId] : undefined;
+        const rate = row.rateMetricId ? model.metrics[row.rateMetricId] : undefined;
+        if (quantity && (quantity.behavior !== 'stock' || !unitsEqual(quantity.unit, PERSON))) {
+          issues.push({ path: `model.breakdowns.${breakdown.resultMetricId}.rows.${row.id}`, message: 'Количество позиции должно быть Stock-метрикой в людях.' });
+        }
+        if (rate && (rate.behavior !== 'rate' || !unitsEqual(rate.unit, RUB_PER_PERSON_MONTH))) {
+          issues.push({ path: `model.breakdowns.${breakdown.resultMetricId}.rows.${row.id}`, message: 'Ставка позиции должна быть Rate-метрикой в рублях на человека в месяц.' });
+        }
+      }
+    }
+    for (const metricId of childMetricIds) {
+      if (metricId === parent.id) {
+        issues.push({ path: `model.breakdowns.${breakdown.resultMetricId}.rows`, message: 'Результирующая метрика не может входить в собственный состав.' });
+      }
+      if (!model.metrics[metricId]) {
+        issues.push({ path: `model.breakdowns.${breakdown.resultMetricId}.rows`, message: `Внутренняя метрика «${metricId}» не существует.` });
+      }
+      if (claimedBreakdownMetrics.has(metricId)) {
+        issues.push({ path: `model.breakdowns.${breakdown.resultMetricId}.rows`, message: `Внутренняя метрика «${metricId}» уже принадлежит другому составу.` });
+      }
+      claimedBreakdownMetrics.add(metricId);
+    }
+    const formulaDependencies = parent.formula
+      ? extractDependencies(parent.formula.ast)
+      : new Set<string>();
+    if (
+      formulaDependencies.size !== childMetricIds.length
+      || childMetricIds.some((metricId) => !formulaDependencies.has(metricId))
+    ) {
+      issues.push({ path: `model.metrics.${parent.id}.formula`, message: 'Формула результата не соответствует строкам состава.' });
     }
   }
   for (const relation of model.influenceRelations) {

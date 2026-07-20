@@ -2,6 +2,12 @@ import { describe, expect, it } from 'vitest';
 import fixture from './fixtures/tokberi-base-station.json';
 import { computeGraphFocus, computeImpact, computeTokBeriThresholds } from './analysis';
 import { createBlankModel } from './builder';
+import {
+  breakdownChildMetricIds,
+  removeMetricBreakdown,
+  toggleMetricBreakdown,
+  upsertMetricBreakdown,
+} from './breakdowns';
 import { CASH_FLOW_MODEL_ID, createCashFlowModel } from './cash-flow-template';
 import { evaluateModel, getCalculationRelations, inferFormulaNode } from './evaluator';
 import {
@@ -13,6 +19,7 @@ import { validateModelDocument } from './schema';
 import {
   createWorkspaceDocument,
   BEHAVIOR_UPGRADE_BACKUP_KEY,
+  BREAKDOWN_UPGRADE_BACKUP_KEY,
   CASH_FLOW_RESET_BACKUP_KEY,
   importWorkspace,
   LEGACY_WORKSPACE_STORAGE_KEY,
@@ -114,11 +121,50 @@ describe('minimal cash-flow starter model', () => {
     expect(result.errors).toEqual([]);
     expect(result.metrics.total_revenue.value).toBeCloseTo(11_250);
     expect(result.metrics.transactional_cost.value).toBeCloseTo(393.75);
-    expect(result.metrics.total_cost.value).toBeCloseTo(993.75);
-    expect(result.metrics.profit.value).toBeCloseTo(10_256.25);
+    expect(result.metrics.payroll_cost.value).toBeCloseTo(200_000);
+    expect(result.metrics.total_cost.value).toBeCloseTo(200_993.75);
+    expect(result.metrics.profit.value).toBeCloseTo(-189_743.75);
     expect(thresholds.breakEven.reached).toBe(true);
     expect(thresholds.breakEven.inputId).toBe('total_rents');
-    expect(thresholds.breakEven.value).toBeCloseTo(2.487, 2);
+    expect(thresholds.breakEven.value).toBeCloseTo(831.5, 1);
+  });
+
+  it('keeps payroll rows as real metrics and expands or collapses them on Canvas', () => {
+    const model = createCashFlowModel();
+    const breakdown = model.breakdowns?.payroll_cost;
+
+    expect(breakdown).toBeDefined();
+    expect(breakdown?.template).toBe('quantity_rate');
+    expect(breakdown?.rows.map((row) => row.name)).toEqual([
+      'Frontend-разработчик',
+      'Backend-разработчик',
+    ]);
+    expect(breakdownChildMetricIds(breakdown!)).toHaveLength(4);
+    expect(evaluateModel(model).metrics.payroll_cost.value).toBeCloseTo(200_000);
+
+    const expanded = toggleMetricBreakdown(model, 'payroll_cost');
+    expect(expanded.breakdowns?.payroll_cost.expanded).toBe(true);
+    expect(validateModelDocument(expanded)).toMatchObject({ ok: true });
+  });
+
+  it('supports a compact list of amounts and can safely return to a manual total', () => {
+    const source = createCashFlowModel();
+    const withInfrastructureRows = upsertMetricBreakdown(source, 'infrastructure_cost', {
+      template: 'amount_list',
+      rows: [
+        { id: 'cloud', name: 'Облачная инфраструктура', comment: '', amount: 500 },
+        { id: 'sim', name: 'SIM-карты', comment: '', amount: 700 },
+      ],
+    });
+
+    expect(evaluateModel(withInfrastructureRows).metrics.infrastructure_cost.value).toBeCloseTo(1_200);
+    expect(validateModelDocument(withInfrastructureRows)).toMatchObject({ ok: true });
+
+    const removed = removeMetricBreakdown(withInfrastructureRows, 'infrastructure_cost', 1_200);
+    expect(removed.breakdowns?.infrastructure_cost).toBeUndefined();
+    expect(removed.metrics.infrastructure_cost.formula).toBeUndefined();
+    expect(removed.metrics.infrastructure_cost.value).toBe(1_200);
+    expect(validateModelDocument(removed)).toMatchObject({ ok: true });
   });
 });
 
@@ -142,6 +188,18 @@ describe('schema, AST and DAG safety', () => {
     const checked = validateModelDocument(model);
     expect(checked.ok).toBe(false);
     if (!checked.ok) expect(checked.issues.some((issue) => issue.message.includes('Несовместимые единицы'))).toBe(true);
+  });
+
+  it('rejects a breakdown row whose quantity no longer has Stock semantics', () => {
+    const model = structuredClone(createCashFlowModel());
+    const quantityId = model.breakdowns!.payroll_cost.rows[0].quantityMetricId!;
+    model.metrics[quantityId].behavior = 'flow';
+
+    const checked = validateModelDocument(model);
+    expect(checked.ok).toBe(false);
+    if (!checked.ok) {
+      expect(checked.issues.some((issue) => issue.message.includes('Stock-метрикой'))).toBe(true);
+    }
   });
 
   it('allows One-off but still rejects Event in the arithmetic graph', () => {
@@ -389,5 +447,34 @@ describe('universal builder schema v2', () => {
     expect(loaded.value.model.metrics).not.toHaveProperty('payback_months');
     expect(storage.getItem(CASH_FLOW_RESET_BACKUP_KEY)).toBe(previous);
     expect(loaded.warning).toContain('минимальной моделью денежного потока');
+  });
+
+  it('upgrades an existing cash-flow payroll value into a tabular breakdown with backup', () => {
+    const legacyModel = removeMetricBreakdown(createCashFlowModel(), 'payroll_cost', 240_000);
+    const workspace = createWorkspaceDocument(legacyModel, {
+      inputOverridesByScenario: { base: { payroll_cost: 240_000 } },
+    });
+    const serialized = JSON.stringify(workspace);
+    const items = new Map<string, string>([[WORKSPACE_STORAGE_KEY, serialized]]);
+    const storage = {
+      get length() { return items.size; },
+      clear: () => items.clear(),
+      getItem: (key: string) => items.get(key) ?? null,
+      key: (index: number) => [...items.keys()][index] ?? null,
+      removeItem: (key: string) => { items.delete(key); },
+      setItem: (key: string, value: string) => { items.set(key, value); },
+    } satisfies Storage;
+
+    const loaded = loadWorkspace(storage);
+    const breakdown = loaded.value.model.breakdowns?.payroll_cost;
+
+    expect(breakdown?.rows).toHaveLength(2);
+    expect(evaluateModel(
+      loaded.value.model,
+      'base',
+      loaded.value.inputOverridesByScenario.base,
+    ).metrics.payroll_cost.value).toBeCloseTo(240_000);
+    expect(storage.getItem(BREAKDOWN_UPGRADE_BACKUP_KEY)).toBe(serialized);
+    expect(loaded.warning).toContain('табличный состав');
   });
 });

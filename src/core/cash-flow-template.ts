@@ -1,4 +1,5 @@
 import { add, multiply, ref, subtract, sum } from './ast';
+import { upsertMetricBreakdown } from './breakdowns';
 import { MODEL_SCHEMA_VERSION } from './model';
 import type {
   DomainDef,
@@ -292,7 +293,7 @@ export function createCashFlowModel(): ModelState {
 
   const metrics = Object.fromEntries(metricList.map((item) => [item.id, item]));
 
-  return {
+  const model: ModelState = {
     schemaVersion: MODEL_SCHEMA_VERSION,
     id: CASH_FLOW_MODEL_ID,
     name: 'TokBeri — денежный поток',
@@ -301,6 +302,7 @@ export function createCashFlowModel(): ModelState {
     metrics,
     domains: domainsFromMetrics(metrics),
     visualGroups: {},
+    breakdowns: {},
     scenarios: {
       base: {
         id: 'base',
@@ -311,4 +313,24 @@ export function createCashFlowModel(): ModelState {
     },
     influenceRelations: [],
   };
+
+  return upsertMetricBreakdown(model, 'payroll_cost', {
+    template: 'quantity_rate',
+    rows: [
+      {
+        id: 'frontend',
+        name: 'Frontend-разработчик',
+        comment: '',
+        quantity: 1,
+        rate: 100_000,
+      },
+      {
+        id: 'backend',
+        name: 'Backend-разработчик',
+        comment: '',
+        quantity: 1,
+        rate: 100_000,
+      },
+    ],
+  });
 }

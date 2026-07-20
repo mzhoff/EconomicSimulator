@@ -171,6 +171,25 @@ export interface VisualGroupDef {
   collapsed: boolean;
 }
 
+export type MetricBreakdownTemplate = 'amount_list' | 'quantity_rate';
+
+export interface MetricBreakdownRowDef {
+  id: string;
+  name: string;
+  comment: string;
+  amountMetricId?: string;
+  quantityMetricId?: string;
+  rateMetricId?: string;
+}
+
+export interface MetricBreakdownDef {
+  id: string;
+  resultMetricId: string;
+  template: MetricBreakdownTemplate;
+  rows: MetricBreakdownRowDef[];
+  expanded: boolean;
+}
+
 export interface ModelState {
   schemaVersion: typeof MODEL_SCHEMA_VERSION;
   id: string;
@@ -180,6 +199,7 @@ export interface ModelState {
   metrics: Record<string, MetricDef>;
   domains: Record<string, DomainDef>;
   visualGroups: Record<string, VisualGroupDef>;
+  breakdowns?: Record<string, MetricBreakdownDef>;
   scenarios: Record<string, Scenario>;
   influenceRelations: InfluenceRelation[];
 }

@@ -2,6 +2,7 @@ import type { StorageResult } from '../core/storage';
 import { validateWorkspaceDocument } from '../core/schema';
 import type { WorkspaceDocument } from '../core/model';
 import { upgradeOneOffBehaviors } from '../core/migration';
+import { upgradeCashFlowPayrollBreakdown } from '../core/breakdowns';
 import {
   CASH_FLOW_MODEL_ID,
   LEGACY_TOKBERI_MODEL_ID,
@@ -11,6 +12,7 @@ export const MODEL_LIBRARY_VERSION = 1 as const;
 export const MODEL_LIBRARY_STORAGE_KEY = 'economic-simulator:model-library:v1';
 export const MODEL_LIBRARY_BEHAVIOR_BACKUP_KEY = 'economic-simulator:model-library:backup:one-off';
 export const MODEL_LIBRARY_CASH_FLOW_BACKUP_KEY = 'economic-simulator:model-library:backup:cash-flow-reset';
+export const MODEL_LIBRARY_BREAKDOWN_BACKUP_KEY = 'economic-simulator:model-library:backup:breakdown-v1';
 
 export interface ModelLibraryEntry {
   workspace: WorkspaceDocument;
@@ -88,16 +90,22 @@ function replaceLegacyStarterModel(
   };
 }
 
-function upgradeLibraryBehaviors(value: unknown): { value: unknown; changed: boolean } {
+function upgradeLibraryModels(value: unknown): {
+  value: unknown;
+  changed: boolean;
+  oneOffChanged: boolean;
+  breakdownChanged: boolean;
+} {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    return { value, changed: false };
+    return { value, changed: false, oneOffChanged: false, breakdownChanged: false };
   }
   const candidate = value as Partial<ModelLibraryState>;
   if (!candidate.entries || typeof candidate.entries !== 'object' || Array.isArray(candidate.entries)) {
-    return { value, changed: false };
+    return { value, changed: false, oneOffChanged: false, breakdownChanged: false };
   }
 
-  let changed = false;
+  let oneOffChanged = false;
+  let breakdownChanged = false;
   const entries = Object.fromEntries(
     Object.entries(candidate.entries).map(([modelId, rawEntry]) => {
       if (!rawEntry || typeof rawEntry !== 'object' || Array.isArray(rawEntry)) {
@@ -105,16 +113,20 @@ function upgradeLibraryBehaviors(value: unknown): { value: unknown; changed: boo
       }
       const workspace = (rawEntry as Partial<ModelLibraryEntry>).workspace;
       if (!workspace) return [modelId, rawEntry];
-      const upgraded = upgradeOneOffBehaviors(workspace);
-      if (!upgraded.changed) return [modelId, rawEntry];
-      changed = true;
-      return [modelId, { ...rawEntry, workspace: upgraded.workspace }];
+      const oneOff = upgradeOneOffBehaviors(workspace);
+      const breakdown = upgradeCashFlowPayrollBreakdown(oneOff.workspace);
+      oneOffChanged = oneOffChanged || oneOff.changed;
+      breakdownChanged = breakdownChanged || breakdown.changed;
+      return oneOff.changed || breakdown.changed
+        ? [modelId, { ...rawEntry, workspace: breakdown.workspace }]
+        : [modelId, rawEntry];
     }),
   );
 
+  const changed = oneOffChanged || breakdownChanged;
   return changed
-    ? { changed: true, value: { ...candidate, entries } }
-    : { value, changed: false };
+    ? { changed, oneOffChanged, breakdownChanged, value: { ...candidate, entries } }
+    : { value, changed, oneOffChanged, breakdownChanged };
 }
 
 /**
@@ -136,7 +148,7 @@ export function loadModelLibrary(
   try {
     const raw = storage.getItem(MODEL_LIBRARY_STORAGE_KEY);
     if (raw) {
-      const upgraded = upgradeLibraryBehaviors(JSON.parse(raw) as unknown);
+      const upgraded = upgradeLibraryModels(JSON.parse(raw) as unknown);
       const parsed = validateLibrary(upgraded.value);
       if (parsed) {
         const reset = replaceLegacyStarterModel(parsed, fallbackWorkspace);
@@ -149,13 +161,18 @@ export function loadModelLibrary(
           };
         }
         if (upgraded.changed) {
-          storage.setItem(MODEL_LIBRARY_BEHAVIOR_BACKUP_KEY, raw);
+          if (upgraded.oneOffChanged) storage.setItem(MODEL_LIBRARY_BEHAVIOR_BACKUP_KEY, raw);
+          if (upgraded.breakdownChanged) storage.setItem(MODEL_LIBRARY_BREAKDOWN_BACKUP_KEY, raw);
           storage.setItem(MODEL_LIBRARY_STORAGE_KEY, serializeLibrary(parsed));
         }
         return {
           value: parsed,
           warning: upgraded.changed
-            ? 'Доставка и монтаж в сохранённых моделях обновлены до One-off; библиотека сохранена с backup.'
+            ? [
+                upgraded.oneOffChanged ? 'Доставка и монтаж обновлены до One-off.' : null,
+                upgraded.breakdownChanged ? 'Фонд оплаты труда переведён в табличный состав.' : null,
+                'Библиотека сохранена с backup.',
+              ].filter(Boolean).join(' ')
             : undefined,
         };
       }

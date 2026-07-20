@@ -5,11 +5,13 @@ import {
   LEGACY_TOKBERI_MODEL_ID,
 } from '../core/cash-flow-template';
 import { createWorkspaceDocument } from '../core/storage';
+import { removeMetricBreakdown } from '../core/breakdowns';
 import { createTokBeriModel } from '../core/tokberi-template';
 import {
   MODEL_LIBRARY_CASH_FLOW_BACKUP_KEY,
   MODEL_LIBRARY_STORAGE_KEY,
   MODEL_LIBRARY_BEHAVIOR_BACKUP_KEY,
+  MODEL_LIBRARY_BREAKDOWN_BACKUP_KEY,
   deleteEntry,
   duplicateEntry,
   loadModelLibrary,
@@ -155,5 +157,31 @@ describe('model library', () => {
     expect(loaded.value.entries[LEGACY_TOKBERI_MODEL_ID]).toBeUndefined();
     expect(storage.getItem(MODEL_LIBRARY_CASH_FLOW_BACKUP_KEY)).toBe(serialized);
     expect(loaded.warning).toContain('денежного потока');
+  });
+
+  it('upgrades payroll breakdowns in every saved cash-flow model and keeps a backup', () => {
+    const storage = new MemoryStorage();
+    const fallback = workspace();
+    const oldWorkspace = createWorkspaceDocument(
+      removeMetricBreakdown(createCashFlowModel(), 'payroll_cost', 220_000),
+      { inputOverridesByScenario: { base: { payroll_cost: 220_000 } } },
+    );
+    const oldLibrary = {
+      version: 1,
+      activeModelId: oldWorkspace.model.id,
+      entries: {
+        [oldWorkspace.model.id]: { workspace: oldWorkspace },
+      },
+    };
+    const serialized = JSON.stringify(oldLibrary);
+    storage.setItem(MODEL_LIBRARY_STORAGE_KEY, serialized);
+
+    const loaded = loadModelLibrary(fallback, storage);
+    const migrated = loaded.value.entries[oldWorkspace.model.id]!.workspace;
+
+    expect(migrated.model.breakdowns?.payroll_cost.rows).toHaveLength(2);
+    expect(migrated.inputOverridesByScenario.base).not.toHaveProperty('payroll_cost');
+    expect(storage.getItem(MODEL_LIBRARY_BREAKDOWN_BACKUP_KEY)).toBe(serialized);
+    expect(loaded.warning).toContain('табличный состав');
   });
 });

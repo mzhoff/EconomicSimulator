@@ -7,10 +7,13 @@ import {
   PanelRightClose,
   PanelRightOpen,
   Sparkles,
+  TableProperties,
   Target,
 } from 'lucide-react';
 import {
   behaviorLabel,
+  allBreakdownChildMetricIds,
+  canHaveMetricBreakdown,
   fmt,
   getCalculationRelations,
   type ImpactResult,
@@ -38,6 +41,8 @@ interface InspectorPanelProps {
   onSelect: (id: string) => void;
   onSetNorthStar: (id: string) => void;
   onChangeShock: (shock: Shock) => void;
+  onOpenBreakdown: (id: string) => void;
+  onToggleBreakdown: (id: string) => void;
 }
 
 const stationSummaryMetrics = [
@@ -87,6 +92,8 @@ export function InspectorPanel({
   onSelect,
   onSetNorthStar,
   onChangeShock,
+  onOpenBreakdown,
+  onToggleBreakdown,
 }: InspectorPanelProps) {
   const selected = selectedId ? metrics[selectedId] : undefined;
   const relations = getCalculationRelations(model);
@@ -104,6 +111,13 @@ export function InspectorPanel({
     : undefined;
   const isCashFlowModel = Boolean(model.metrics.total_revenue && model.metrics.total_cost && model.metrics.profit);
   const summaryMetrics = isCashFlowModel ? cashFlowSummaryMetrics : stationSummaryMetrics;
+  const selectedBreakdown = selected ? model.breakdowns?.[selected.id] : undefined;
+  const selectedIsBreakdownChild = selected
+    ? allBreakdownChildMetricIds(model).has(selected.id)
+    : false;
+  const canManageBreakdown = Boolean(
+    selected && !selectedIsBreakdownChild && canHaveMetricBreakdown(selected),
+  );
 
   return (
     <>
@@ -163,6 +177,27 @@ export function InspectorPanel({
                     Сделать North Star
                   </button>
                 )}
+
+                {canManageBreakdown ? (
+                  <div className="mt-[0.5rem] flex flex-wrap gap-[0.375rem]">
+                    <button
+                      onClick={() => onOpenBreakdown(selected.id)}
+                      className="flex cursor-pointer items-center gap-[0.25rem] rounded-[var(--radius-md)] border border-violet-200 bg-violet-50/60 px-[0.5rem] py-[0.3125rem] text-[0.625rem] text-violet-700 hover:border-violet-400"
+                    >
+                      <TableProperties className="size-[0.6875rem]" />
+                      {selectedBreakdown ? `Состав: ${selectedBreakdown.rows.length} поз.` : 'Добавить состав'}
+                    </button>
+                    {selectedBreakdown ? (
+                      <button
+                        onClick={() => onToggleBreakdown(selected.id)}
+                        className="flex cursor-pointer items-center gap-[0.25rem] rounded-[var(--radius-md)] border border-border px-[0.5rem] py-[0.3125rem] text-[0.625rem] text-muted-foreground hover:border-violet-300 hover:text-violet-700"
+                      >
+                        <GitBranch className="size-[0.6875rem]" />
+                        {selectedBreakdown.expanded ? 'Свернуть на Canvas' : 'Развернуть на Canvas'}
+                      </button>
+                    ) : null}
+                  </div>
+                ) : null}
 
                 <div className="mt-[0.75rem] space-y-[0.25rem]">
                   <Row label="Behavior" value={behaviorLabel(selected.behavior)} />

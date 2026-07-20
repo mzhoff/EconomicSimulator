@@ -9,6 +9,7 @@ export const RENTAL: UnitSpec = { symbol: 'аренд', dimensions: { 'count:ren
 export const POWERBANK: UnitSpec = { symbol: 'шт.', dimensions: { 'count:powerbank': 1 } };
 export const SLOT: UnitSpec = { symbol: 'слотов', dimensions: { 'count:slot': 1 } };
 export const CYCLE: UnitSpec = { symbol: 'циклов', dimensions: { 'count:cycle': 1 } };
+export const PERSON: UnitSpec = { symbol: 'чел.', dimensions: { 'count:person': 1 } };
 
 export const RENTAL_PER_DAY: UnitSpec = {
   symbol: 'аренд/день',
@@ -29,6 +30,14 @@ export const CYCLE_PER_RENTAL: UnitSpec = {
 export const CYCLE_PER_POWERBANK: UnitSpec = {
   symbol: 'циклов/батарею',
   dimensions: { 'count:cycle': 1, 'count:powerbank': -1 },
+};
+export const RUB_PER_PERSON_MONTH: UnitSpec = {
+  symbol: '₽/чел./мес.',
+  dimensions: {
+    'currency:RUB': 1,
+    'count:person': -1,
+    'time:month': -1,
+  },
 };
 
 function normalizedDimensions(dimensions: Record<string, number>): Record<string, number> {
@@ -100,6 +109,10 @@ export function unitFromPreset(preset: string): UnitSpec {
       return MONTH;
     case 'days':
       return DAY;
+    case 'people':
+      return PERSON;
+    case 'rub_per_person_month':
+      return RUB_PER_PERSON_MONTH;
     default:
       return DIMENSIONLESS;
   }

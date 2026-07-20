@@ -1,5 +1,17 @@
 export { createTokBeriModel as createDefaultModel } from '../../core/tokberi-template';
 export { createBlankModel } from '../../core/builder';
+export {
+  allBreakdownChildMetricIds,
+  breakdownChildMetricIds,
+  canHaveMetricBreakdown,
+  removeMetricBreakdown,
+  toggleMetricBreakdown,
+  upsertMetricBreakdown,
+} from '../../core/breakdowns';
+export type {
+  MetricBreakdownInput,
+  MetricBreakdownRowInput,
+} from '../../core/breakdowns';
 export { evaluateModel as computeMetrics, getCalculationRelations, wouldCreateCycle } from '../../core/evaluator';
 export {
   assertUniqueMetricAlias,
@@ -38,6 +50,9 @@ export type {
   InfluenceRelation,
   KnowledgeStatus,
   MetricBehavior,
+  MetricBreakdownDef,
+  MetricBreakdownRowDef,
+  MetricBreakdownTemplate,
   MetricDef,
   MetricDomain,
   MetricKind,

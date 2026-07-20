@@ -1,5 +1,11 @@
 import { Braces, Check, Plus, Sparkles, X } from 'lucide-react';
 import type { FormEvent, ReactNode } from 'react';
+import {
+  BASE_UNIT_OPTIONS,
+  RATE_DENOMINATOR_OPTIONS,
+  unitFromPreset,
+  type UnitPresetOption,
+} from '../../core/units';
 import type { BuilderMetricBehavior } from './metric-geometry';
 
 export interface DomainOption {
@@ -24,11 +30,6 @@ export interface MetricNodeDraft {
   formulaSource: string;
 }
 
-export interface UnitPresetOption {
-  value: string;
-  label: string;
-}
-
 export interface NodeEditorProps {
   open: boolean;
   mode: 'create' | 'edit';
@@ -48,25 +49,6 @@ export interface NodeEditorProps {
 }
 
 const ALIAS_PATTERN = /^[a-z][a-z0-9_]*$/;
-
-const DEFAULT_UNIT_OPTIONS: UnitPresetOption[] = [
-  { value: 'rub', label: '₽ — рубли' },
-  { value: 'rub_per_rental', label: '₽ / аренду' },
-  { value: 'rub_per_powerbank', label: '₽ / батарею' },
-  { value: 'percent', label: '% — проценты' },
-  { value: 'rentals', label: 'Аренды' },
-  { value: 'rentals_per_day', label: 'Аренды в день' },
-  { value: 'powerbanks', label: 'Батареи' },
-  { value: 'slots', label: 'Слоты' },
-  { value: 'cycles', label: 'Циклы' },
-  { value: 'cycles_per_rental', label: 'Циклы / аренду' },
-  { value: 'cycles_per_powerbank', label: 'Циклы / батарею' },
-  { value: 'months', label: 'Месяцы' },
-  { value: 'days', label: 'Дни' },
-  { value: 'people', label: 'Люди' },
-  { value: 'rub_per_person_month', label: '₽ / человек / месяц' },
-  { value: 'ratio', label: 'Безразмерная' },
-];
 
 const BEHAVIOR_OPTIONS: Array<{
   value: BuilderMetricBehavior;
@@ -120,7 +102,7 @@ export function NodeEditor({
   formulaError,
   formError,
   saving = false,
-  unitOptions = DEFAULT_UNIT_OPTIONS,
+  unitOptions = BASE_UNIT_OPTIONS,
   managedByBreakdown = false,
 }: NodeEditorProps) {
   if (!open) return null;
@@ -142,9 +124,36 @@ export function NodeEditor({
     ?? formulaRequiredError
     ?? formulaError;
   const canSave = Boolean(draft.name.trim() && draft.alias.trim() && !blockingError && !formError && !saving);
+  const [unitNumerator = 'ratio', unitDenominator = '', unitDenominator2 = ''] = draft.unitPreset.split('/');
+  const unitIsPercent = unitNumerator === 'percent';
+  const unitPreview = unitFromPreset(draft.unitPreset).symbol;
 
   const update = <Key extends keyof MetricNodeDraft>(key: Key, value: MetricNodeDraft[Key]) => {
     onChange({ ...draft, [key]: value });
+  };
+
+  const updateBehavior = (behavior: BuilderMetricBehavior) => {
+    const parts = draft.unitPreset.split('/');
+    const numerator = parts[0] || 'ratio';
+    const unitPreset = behavior === 'rate'
+      ? numerator === 'percent' || numerator === 'ratio'
+        ? numerator
+        : parts.length > 1
+          ? draft.unitPreset
+          : `${numerator}/months`
+      : numerator;
+    onChange({ ...draft, behavior, unitPreset });
+  };
+
+  const updateRateUnit = (
+    numerator: string,
+    denominator: string,
+    secondaryDenominator: string,
+  ) => {
+    const unitPreset = numerator === 'percent'
+      ? numerator
+      : [numerator, denominator, secondaryDenominator].filter(Boolean).join('/');
+    update('unitPreset', unitPreset);
   };
 
   const toggleDomain = (domainId: string) => {
@@ -220,7 +229,7 @@ export function NodeEditor({
                     key={option.value}
                     type="button"
                     aria-pressed={draft.behavior === option.value}
-                    onClick={() => update('behavior', option.value)}
+                    onClick={() => updateBehavior(option.value)}
                     className={`flex min-h-[5.25rem] flex-col items-center justify-between rounded-[var(--radius-lg)] border p-[0.625rem] text-center transition-all cursor-pointer ${
                       draft.behavior === option.value
                         ? 'border-primary bg-primary/[0.04] shadow-[0_0_0_1px_var(--primary)]'
@@ -282,18 +291,82 @@ export function NodeEditor({
                 </Field>
 
                 <div className="grid grid-cols-2 gap-[0.75rem]">
-                  <Field label="Единица измерения" required>
-                    <select
-                      value={draft.unitPreset}
-                      disabled={managedByBreakdown}
-                      onChange={(event) => update('unitPreset', event.target.value)}
-                      className="field-input cursor-pointer"
-                    >
-                      {unitOptions.map((option) => (
-                        <option key={option.value} value={option.value}>{option.label}</option>
-                      ))}
-                    </select>
-                  </Field>
+                  {draft.behavior === 'rate' ? (
+                    <div className="col-span-2">
+                      <div className="mb-[0.25rem] text-[0.6875rem] text-muted-foreground">
+                        Единица Rate <span className="text-red-500">*</span>
+                      </div>
+                      <div className="grid grid-cols-1 gap-[0.5rem] sm:grid-cols-3">
+                        <Field label="Числитель">
+                          <select
+                            value={unitNumerator}
+                            disabled={managedByBreakdown}
+                            onChange={(event) => updateRateUnit(
+                              event.target.value,
+                              unitDenominator || 'months',
+                              unitDenominator2,
+                            )}
+                            className="field-input cursor-pointer"
+                          >
+                            {unitOptions.map((option) => (
+                              <option key={option.value} value={option.value}>{option.label}</option>
+                            ))}
+                          </select>
+                        </Field>
+                        <Field label="Знаменатель">
+                          <select
+                            value={unitDenominator}
+                            disabled={managedByBreakdown || unitIsPercent}
+                            onChange={(event) => updateRateUnit(
+                              unitNumerator,
+                              event.target.value,
+                              unitDenominator2,
+                            )}
+                            className="field-input cursor-pointer"
+                          >
+                            <option value="">Нет</option>
+                            {RATE_DENOMINATOR_OPTIONS.map((option) => (
+                              <option key={option.value} value={option.value}>{option.label}</option>
+                            ))}
+                          </select>
+                        </Field>
+                        <Field label="Доп. знаменатель">
+                          <select
+                            value={unitDenominator2}
+                            disabled={managedByBreakdown || unitIsPercent || !unitDenominator}
+                            onChange={(event) => updateRateUnit(
+                              unitNumerator,
+                              unitDenominator,
+                              event.target.value,
+                            )}
+                            className="field-input cursor-pointer"
+                          >
+                            <option value="">Нет</option>
+                            {RATE_DENOMINATOR_OPTIONS.map((option) => (
+                              <option key={option.value} value={option.value}>{option.label}</option>
+                            ))}
+                          </select>
+                        </Field>
+                      </div>
+                      <p className="mt-[0.25rem] text-[0.5625rem] text-muted-foreground">
+                        Итоговая единица: <span className="font-medium text-foreground">{unitPreview}</span>
+                        {' '}· пример: ₽ / чел. / мес. или шт. / день.
+                      </p>
+                    </div>
+                  ) : (
+                    <Field label="Единица измерения" required>
+                      <select
+                        value={unitNumerator}
+                        disabled={managedByBreakdown}
+                        onChange={(event) => update('unitPreset', event.target.value)}
+                        className="field-input cursor-pointer"
+                      >
+                        {unitOptions.map((option) => (
+                          <option key={option.value} value={option.value}>{option.label}</option>
+                        ))}
+                      </select>
+                    </Field>
+                  )}
                   {draft.valueMode === 'manual' ? (
                     <Field label="Текущее значение" required>
                       <NumberInput value={draft.value} onChange={(value) => update('value', value)} />

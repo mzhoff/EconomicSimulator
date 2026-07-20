@@ -32,6 +32,7 @@ import {
   removeMetricBreakdown,
   toggleMetricBreakdown,
   unitFromPreset,
+  unitPresetFromUnit,
   upsertMetricBreakdown,
   type DomainDef,
   type Edge,
@@ -190,22 +191,7 @@ function defaultMetricDraft(): MetricNodeDraft {
 }
 
 function unitPresetFor(metric: MetricDef): string {
-  if (metric.unit.symbol === '₽') return 'rub';
-  if (metric.unit.symbol === '₽/аренду') return 'rub_per_rental';
-  if (metric.unit.symbol === '₽/батарею') return 'rub_per_powerbank';
-  if (metric.unit.symbol === '%') return 'percent';
-  if (metric.unit.symbol === 'аренд') return 'rentals';
-  if (metric.unit.symbol === 'аренд/день') return 'rentals_per_day';
-  if (metric.unit.symbol === 'шт.') return 'powerbanks';
-  if (metric.unit.symbol === 'слотов') return 'slots';
-  if (metric.unit.symbol === 'циклов') return 'cycles';
-  if (metric.unit.symbol === 'цикл/аренду') return 'cycles_per_rental';
-  if (metric.unit.symbol === 'циклов/батарею') return 'cycles_per_powerbank';
-  if (metric.unit.symbol === 'мес.') return 'months';
-  if (metric.unit.symbol === 'дн.') return 'days';
-  if (metric.unit.symbol === 'чел.') return 'people';
-  if (metric.unit.symbol === '₽/чел./мес.') return 'rub_per_person_month';
-  return 'ratio';
+  return unitPresetFromUnit(metric.unit);
 }
 
 function toDisplayValue(value: number, unitPreset: string): number {

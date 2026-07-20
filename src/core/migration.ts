@@ -4,12 +4,14 @@ import {
 } from './model';
 import type {
   DomainDef,
+  FormulaNode,
   MetricBehavior,
   MetricDef,
   MetricDomain,
   ModelState,
   WorkspaceDocument,
 } from './model';
+import { normalizeUniversalUnit } from './units';
 
 const DOMAIN_PRESENTATION: Record<string, Pick<DomainDef, 'name' | 'color' | 'description'>> = {
   demand: { name: 'Спрос', color: '#0ea5e9', description: 'Спрос и использование продукта.' },
@@ -82,6 +84,72 @@ export function upgradeOneOffBehaviors(
       }
       changed = true;
       return [id, { ...metric, behavior: 'one_off' as const }];
+    }),
+  );
+
+  if (!changed) return { workspace, changed: false };
+  return {
+    changed: true,
+    workspace: {
+      ...workspace,
+      model: {
+        ...workspace.model,
+        metrics,
+      },
+    },
+  };
+}
+
+function normalizeFormulaUnits(node: FormulaNode): FormulaNode {
+  if (node.type === 'literal') {
+    return node.unit
+      ? { ...node, unit: normalizeUniversalUnit(node.unit) }
+      : node;
+  }
+  if (node.type === 'metric') return node;
+  if (node.type === 'binary') {
+    return {
+      ...node,
+      left: normalizeFormulaUnits(node.left),
+      right: normalizeFormulaUnits(node.right),
+    };
+  }
+  if (node.type === 'unary') {
+    return { ...node, operand: normalizeFormulaUnits(node.operand) };
+  }
+  if (node.type === 'function') {
+    return { ...node, args: node.args.map(normalizeFormulaUnits) };
+  }
+  if (node.type === 'comparison') {
+    return {
+      ...node,
+      left: normalizeFormulaUnits(node.left),
+      right: normalizeFormulaUnits(node.right),
+    };
+  }
+  return {
+    ...node,
+    condition: normalizeFormulaUnits(node.condition),
+    whenTrue: normalizeFormulaUnits(node.whenTrue),
+    whenFalse: normalizeFormulaUnits(node.whenFalse),
+  };
+}
+
+export function upgradeUniversalUnits(
+  workspace: WorkspaceDocument,
+): { workspace: WorkspaceDocument; changed: boolean } {
+  if (!workspace?.model?.metrics) return { workspace, changed: false };
+
+  let changed = false;
+  const metrics = Object.fromEntries(
+    Object.entries(workspace.model.metrics).map(([id, metric]) => {
+      const unit = normalizeUniversalUnit(metric.unit);
+      const formula = metric.formula
+        ? { ...metric.formula, ast: normalizeFormulaUnits(metric.formula.ast) }
+        : undefined;
+      const next = { ...metric, unit, formula };
+      if (JSON.stringify(next) !== JSON.stringify(metric)) changed = true;
+      return [id, next];
     }),
   );
 

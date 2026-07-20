@@ -40,7 +40,7 @@ export {
 } from '../../core/analysis';
 export type { GraphFocusMode, GraphFocusState } from '../../core/analysis';
 export { autoLayout, behaviorLabel, fmt } from '../../core/presentation';
-export { unitFromPreset } from '../../core/units';
+export { unitFromPreset, unitPresetFromUnit } from '../../core/units';
 export type {
   CalculationRelation,
   CalculationDirection,

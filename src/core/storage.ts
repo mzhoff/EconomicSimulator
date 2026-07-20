@@ -6,6 +6,7 @@ import {
   isLegacyWorkspaceDocument,
   migrateLegacyWorkspaceDocument,
   upgradeOneOffBehaviors,
+  upgradeUniversalUnits,
 } from './migration';
 import { parseWorkspaceJson, validateWorkspaceDocument } from './schema';
 
@@ -15,6 +16,7 @@ export const MIGRATION_BACKUP_KEY = 'economic-simulator:migration-backup:v2';
 export const BEHAVIOR_UPGRADE_BACKUP_KEY = 'economic-simulator:behavior-upgrade-backup:one-off';
 export const CASH_FLOW_RESET_BACKUP_KEY = 'economic-simulator:cash-flow-reset-backup:v2';
 export const BREAKDOWN_UPGRADE_BACKUP_KEY = 'economic-simulator:breakdown-upgrade-backup:v1';
+export const UNIT_UPGRADE_BACKUP_KEY = 'economic-simulator:unit-upgrade-backup:universal-v1';
 export const LEGACY_WORKSPACE_STORAGE_KEY = 'economic-simulator:workspace:v1';
 export const PREVIOUS_WORKSPACE_STORAGE_KEY = 'economic-simulator:workspace:v2';
 const PREVIOUS_WORKSPACE_STORAGE_KEYS = [
@@ -73,12 +75,14 @@ export function importWorkspace(text: string): ReturnType<typeof parseWorkspaceJ
   if (current.ok) {
     const oneOff = upgradeOneOffBehaviors(current.workspace);
     const breakdown = upgradeCashFlowPayrollBreakdown(oneOff.workspace);
-    return validateWorkspaceDocument(breakdown.workspace);
+    const units = upgradeUniversalUnits(breakdown.workspace);
+    return validateWorkspaceDocument(units.workspace);
   }
   try {
     const raw = JSON.parse(text) as unknown;
     if (!isLegacyWorkspaceDocument(raw)) return current;
-    return validateWorkspaceDocument(migrateLegacyWorkspaceDocument(raw));
+    const migrated = migrateLegacyWorkspaceDocument(raw);
+    return validateWorkspaceDocument(upgradeUniversalUnits(migrated).workspace);
   } catch {
     return current;
   }
@@ -91,9 +95,10 @@ function upgradeStoredWorkspace(
 ): StorageResult<WorkspaceDocument> {
   const oneOff = upgradeOneOffBehaviors(workspace);
   const breakdown = upgradeCashFlowPayrollBreakdown(oneOff.workspace);
-  if (!oneOff.changed && !breakdown.changed) return { value: workspace };
+  const units = upgradeUniversalUnits(breakdown.workspace);
+  if (!oneOff.changed && !breakdown.changed && !units.changed) return { value: workspace };
 
-  const checked = validateWorkspaceDocument(breakdown.workspace);
+  const checked = validateWorkspaceDocument(units.workspace);
   if (!checked.ok) {
     return {
       value: workspace,
@@ -103,6 +108,7 @@ function upgradeStoredWorkspace(
 
   if (oneOff.changed) storage.setItem(BEHAVIOR_UPGRADE_BACKUP_KEY, serialized);
   if (breakdown.changed) storage.setItem(BREAKDOWN_UPGRADE_BACKUP_KEY, serialized);
+  if (units.changed) storage.setItem(UNIT_UPGRADE_BACKUP_KEY, serialized);
   const upgradedSerialized = serializeWorkspace(checked.workspace);
   storage.setItem(WORKSPACE_STORAGE_KEY, upgradedSerialized);
   storage.setItem(LAST_VALID_STORAGE_KEY, upgradedSerialized);
@@ -111,6 +117,7 @@ function upgradeStoredWorkspace(
     warning: [
       oneOff.changed ? 'Доставка и монтаж обновлены до One-off.' : null,
       breakdown.changed ? 'Фонд оплаты труда переведён в табличный состав.' : null,
+      units.changed ? 'Единицы измерения переведены на универсальные.' : null,
       'Предыдущий JSON сохранён в backup.',
     ].filter(Boolean).join(' '),
   };
@@ -125,7 +132,8 @@ function migrateLegacyStorage(storage: Storage): StorageResult<WorkspaceDocument
       if (!isLegacyWorkspaceDocument(raw)) continue;
       storage.setItem(MIGRATION_BACKUP_KEY, serialized);
       const migrated = migrateLegacyWorkspaceDocument(raw);
-      const checked = validateWorkspaceDocument(migrated);
+      const units = upgradeUniversalUnits(migrated);
+      const checked = validateWorkspaceDocument(units.workspace);
       if (!checked.ok) {
         return {
           value: createWorkspaceDocument(),

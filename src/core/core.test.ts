@@ -31,6 +31,7 @@ import {
   MIGRATION_BACKUP_KEY,
   PREVIOUS_WORKSPACE_STORAGE_KEY,
   serializeWorkspace,
+  UNIT_UPGRADE_BACKUP_KEY,
   WORKSPACE_STORAGE_KEY,
 } from './storage';
 import { createTokBeriModel } from './tokberi-template';
@@ -634,6 +635,30 @@ describe('universal builder schema v2', () => {
     expect(loaded.value.model.metrics.total_capex.behavior).toBe('stock');
     expect(storage.getItem(BEHAVIOR_UPGRADE_BACKUP_KEY)).toBe(serialized);
     expect(loaded.warning).toContain('One-off');
+  });
+
+  it('upgrades legacy object-specific units in local storage with backup', () => {
+    const workspace = createWorkspaceDocument(createTokBeriModel());
+    workspace.model.metrics.potential_demand.unit = {
+      symbol: 'аренд/день',
+      dimensions: { 'count:rental': 1, 'time:day': -1 },
+    };
+    const serialized = JSON.stringify(workspace);
+    const items = new Map<string, string>([[WORKSPACE_STORAGE_KEY, serialized]]);
+    const storage = {
+      get length() { return items.size; },
+      clear: () => items.clear(),
+      getItem: (key: string) => items.get(key) ?? null,
+      key: (index: number) => [...items.keys()][index] ?? null,
+      removeItem: (key: string) => { items.delete(key); },
+      setItem: (key: string, value: string) => { items.set(key, value); },
+    } satisfies Storage;
+
+    const loaded = loadWorkspace(storage);
+
+    expect(loaded.value.model.metrics.potential_demand.unit.symbol).toBe('шт./дн.');
+    expect(storage.getItem(UNIT_UPGRADE_BACKUP_KEY)).toBe(serialized);
+    expect(loaded.warning).toContain('универсальные');
   });
 
   it('backs up the previous starter workspace before opening the cash-flow model', () => {

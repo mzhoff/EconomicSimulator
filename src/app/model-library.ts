@@ -1,7 +1,7 @@
 import type { StorageResult } from '../core/storage';
 import { validateWorkspaceDocument } from '../core/schema';
 import type { WorkspaceDocument } from '../core/model';
-import { upgradeOneOffBehaviors } from '../core/migration';
+import { upgradeOneOffBehaviors, upgradeUniversalUnits } from '../core/migration';
 import { upgradeCashFlowPayrollBreakdown } from '../core/breakdowns';
 import {
   CASH_FLOW_MODEL_ID,
@@ -13,6 +13,7 @@ export const MODEL_LIBRARY_STORAGE_KEY = 'economic-simulator:model-library:v1';
 export const MODEL_LIBRARY_BEHAVIOR_BACKUP_KEY = 'economic-simulator:model-library:backup:one-off';
 export const MODEL_LIBRARY_CASH_FLOW_BACKUP_KEY = 'economic-simulator:model-library:backup:cash-flow-reset';
 export const MODEL_LIBRARY_BREAKDOWN_BACKUP_KEY = 'economic-simulator:model-library:backup:breakdown-v1';
+export const MODEL_LIBRARY_UNIT_BACKUP_KEY = 'economic-simulator:model-library:backup:universal-units-v1';
 
 export interface ModelLibraryEntry {
   workspace: WorkspaceDocument;
@@ -95,17 +96,31 @@ function upgradeLibraryModels(value: unknown): {
   changed: boolean;
   oneOffChanged: boolean;
   breakdownChanged: boolean;
+  unitChanged: boolean;
 } {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    return { value, changed: false, oneOffChanged: false, breakdownChanged: false };
+    return {
+      value,
+      changed: false,
+      oneOffChanged: false,
+      breakdownChanged: false,
+      unitChanged: false,
+    };
   }
   const candidate = value as Partial<ModelLibraryState>;
   if (!candidate.entries || typeof candidate.entries !== 'object' || Array.isArray(candidate.entries)) {
-    return { value, changed: false, oneOffChanged: false, breakdownChanged: false };
+    return {
+      value,
+      changed: false,
+      oneOffChanged: false,
+      breakdownChanged: false,
+      unitChanged: false,
+    };
   }
 
   let oneOffChanged = false;
   let breakdownChanged = false;
+  let unitChanged = false;
   const entries = Object.fromEntries(
     Object.entries(candidate.entries).map(([modelId, rawEntry]) => {
       if (!rawEntry || typeof rawEntry !== 'object' || Array.isArray(rawEntry)) {
@@ -115,18 +130,26 @@ function upgradeLibraryModels(value: unknown): {
       if (!workspace) return [modelId, rawEntry];
       const oneOff = upgradeOneOffBehaviors(workspace);
       const breakdown = upgradeCashFlowPayrollBreakdown(oneOff.workspace);
+      const units = upgradeUniversalUnits(breakdown.workspace);
       oneOffChanged = oneOffChanged || oneOff.changed;
       breakdownChanged = breakdownChanged || breakdown.changed;
-      return oneOff.changed || breakdown.changed
-        ? [modelId, { ...rawEntry, workspace: breakdown.workspace }]
+      unitChanged = unitChanged || units.changed;
+      return oneOff.changed || breakdown.changed || units.changed
+        ? [modelId, { ...rawEntry, workspace: units.workspace }]
         : [modelId, rawEntry];
     }),
   );
 
-  const changed = oneOffChanged || breakdownChanged;
+  const changed = oneOffChanged || breakdownChanged || unitChanged;
   return changed
-    ? { changed, oneOffChanged, breakdownChanged, value: { ...candidate, entries } }
-    : { value, changed, oneOffChanged, breakdownChanged };
+    ? {
+      changed,
+      oneOffChanged,
+      breakdownChanged,
+      unitChanged,
+      value: { ...candidate, entries },
+    }
+    : { value, changed, oneOffChanged, breakdownChanged, unitChanged };
 }
 
 /**
@@ -163,6 +186,7 @@ export function loadModelLibrary(
         if (upgraded.changed) {
           if (upgraded.oneOffChanged) storage.setItem(MODEL_LIBRARY_BEHAVIOR_BACKUP_KEY, raw);
           if (upgraded.breakdownChanged) storage.setItem(MODEL_LIBRARY_BREAKDOWN_BACKUP_KEY, raw);
+          if (upgraded.unitChanged) storage.setItem(MODEL_LIBRARY_UNIT_BACKUP_KEY, raw);
           storage.setItem(MODEL_LIBRARY_STORAGE_KEY, serializeLibrary(parsed));
         }
         return {
@@ -171,6 +195,7 @@ export function loadModelLibrary(
             ? [
                 upgraded.oneOffChanged ? 'Доставка и монтаж обновлены до One-off.' : null,
                 upgraded.breakdownChanged ? 'Фонд оплаты труда переведён в табличный состав.' : null,
+                upgraded.unitChanged ? 'Единицы измерения переведены на универсальные.' : null,
                 'Библиотека сохранена с backup.',
               ].filter(Boolean).join(' ')
             : undefined,

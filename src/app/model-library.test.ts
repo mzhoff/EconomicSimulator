@@ -12,6 +12,7 @@ import {
   MODEL_LIBRARY_STORAGE_KEY,
   MODEL_LIBRARY_BEHAVIOR_BACKUP_KEY,
   MODEL_LIBRARY_BREAKDOWN_BACKUP_KEY,
+  MODEL_LIBRARY_UNIT_BACKUP_KEY,
   deleteEntry,
   duplicateEntry,
   loadModelLibrary,
@@ -183,5 +184,37 @@ describe('model library', () => {
     expect(migrated.inputOverridesByScenario.base).not.toHaveProperty('payroll_cost');
     expect(storage.getItem(MODEL_LIBRARY_BREAKDOWN_BACKUP_KEY)).toBe(serialized);
     expect(loaded.warning).toContain('табличный состав');
+  });
+
+  it('upgrades object-specific units in every saved model and keeps a backup', () => {
+    const storage = new MemoryStorage();
+    const fallback = workspace();
+    const oldWorkspace = workspace();
+    oldWorkspace.model.id = 'legacy-units-test';
+    oldWorkspace.model.metrics.total_rents.unit = {
+      symbol: 'аренд',
+      dimensions: { 'count:rental': 1 },
+    };
+    oldWorkspace.model.metrics.avg_rental_revenue.unit = {
+      symbol: '₽/аренду',
+      dimensions: { 'currency:RUB': 1, 'count:rental': -1 },
+    };
+    const oldLibrary = {
+      version: 1,
+      activeModelId: oldWorkspace.model.id,
+      entries: {
+        [oldWorkspace.model.id]: { workspace: oldWorkspace },
+      },
+    };
+    const serialized = JSON.stringify(oldLibrary);
+    storage.setItem(MODEL_LIBRARY_STORAGE_KEY, serialized);
+
+    const loaded = loadModelLibrary(fallback, storage);
+    const metrics = loaded.value.entries[oldWorkspace.model.id]!.workspace.model.metrics;
+
+    expect(metrics.total_rents.unit.symbol).toBe('шт.');
+    expect(metrics.avg_rental_revenue.unit.symbol).toBe('₽/шт.');
+    expect(storage.getItem(MODEL_LIBRARY_UNIT_BACKUP_KEY)).toBe(serialized);
+    expect(loaded.warning).toContain('универсальные');
   });
 });

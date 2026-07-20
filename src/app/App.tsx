@@ -394,12 +394,6 @@ export default function App() {
       .filter((edge) => !hiddenMetricIds.has(edge.from) && !hiddenMetricIds.has(edge.to)),
     [calculationRelations, hiddenMetricIds, model.influenceRelations],
   );
-  const visibleEvaluationMetrics = useMemo(
-    () => Object.fromEntries(
-      Object.entries(evaluation.metrics).filter(([id]) => !hiddenMetricIds.has(id)),
-    ),
-    [evaluation.metrics, hiddenMetricIds],
-  );
   const graphFocus = useMemo(
     () => computeGraphFocus(model, selectedIds, impactActive && impact ? impact.inputId : undefined),
     [impact, impactActive, model, selectedIds],
@@ -1595,7 +1589,7 @@ export default function App() {
         <GraphModeIndicator focus={graphFocus} selectedCount={selectedIds.length} />
 
         <InputPanel
-          metrics={visibleEvaluationMetrics}
+          metrics={evaluation.metrics}
           domains={domains}
           collapsedDomainIds={collapsedDomainIds}
           onToggleDomain={handleToggleDomain}

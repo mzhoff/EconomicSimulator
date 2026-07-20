@@ -273,7 +273,9 @@ export function collapsedBreakdownMetricIds(model: ModelState): Set<string> {
   for (const metricId of requiredOutsideBreakdowns) {
     hiddenSourceMetricIds.delete(metricId);
   }
-  hiddenSourceMetricIds.delete(model.activeNorthStarId);
+  if (model.activeNorthStarId) {
+    hiddenSourceMetricIds.delete(model.activeNorthStarId);
+  }
 
   return new Set([...hiddenOwnedMetricIds, ...hiddenSourceMetricIds]);
 }

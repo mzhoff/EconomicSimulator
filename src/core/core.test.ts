@@ -4,6 +4,7 @@ import { computeGraphFocus, computeImpact, computeTokBeriThresholds } from './an
 import { createBlankModel } from './builder';
 import {
   breakdownChildMetricIds,
+  convertMetricBreakdownTemplate,
   removeMetricBreakdown,
   toggleMetricBreakdown,
   upsertMetricBreakdown,
@@ -165,6 +166,36 @@ describe('minimal cash-flow starter model', () => {
     expect(removed.metrics.infrastructure_cost.formula).toBeUndefined();
     expect(removed.metrics.infrastructure_cost.value).toBe(1_200);
     expect(validateModelDocument(removed)).toMatchObject({ ok: true });
+  });
+
+  it('preserves quantity when switching a breakdown through the amount view', () => {
+    const quantityRate = {
+      template: 'quantity_rate' as const,
+      rows: [{
+        id: 'frontend',
+        name: 'Frontend-разработчик',
+        comment: '',
+        quantity: 2,
+        rate: 100_000,
+      }],
+    };
+
+    const amountList = convertMetricBreakdownTemplate(quantityRate, 'amount_list');
+    expect(amountList.rows[0]).toMatchObject({
+      amount: 200_000,
+      quantity: 2,
+      rate: 100_000,
+    });
+
+    const restored = convertMetricBreakdownTemplate(amountList, 'quantity_rate');
+    expect(restored.rows[0]).toMatchObject({ quantity: 2, rate: 100_000 });
+
+    const editedAmount = {
+      ...amountList,
+      rows: [{ ...amountList.rows[0], amount: 240_000 }],
+    };
+    const recalculated = convertMetricBreakdownTemplate(editedAmount, 'quantity_rate');
+    expect(recalculated.rows[0]).toMatchObject({ quantity: 2, rate: 120_000 });
   });
 });
 

@@ -66,6 +66,56 @@ function finiteOr(value: number | undefined, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
 }
 
+function breakdownRowTotal(
+  row: MetricBreakdownRowInput,
+  template: MetricBreakdownTemplate,
+): number {
+  return template === 'amount_list'
+    ? finiteOr(row.amount, 0)
+    : finiteOr(row.quantity, 0) * finiteOr(row.rate, 0);
+}
+
+export function convertMetricBreakdownTemplate(
+  input: MetricBreakdownInput,
+  template: MetricBreakdownTemplate,
+): MetricBreakdownInput {
+  if (input.template === template) return input;
+
+  return {
+    template,
+    rows: input.rows.map((row) => {
+      if (template === 'amount_list') {
+        return {
+          ...row,
+          amount: breakdownRowTotal(row, input.template),
+        };
+      }
+
+      const amount = Math.max(0, finiteOr(row.amount, 0));
+      const preservedQuantity = Math.max(0, finiteOr(row.quantity, 1));
+      if (preservedQuantity > 0) {
+        return {
+          ...row,
+          quantity: preservedQuantity,
+          rate: amount / preservedQuantity,
+        };
+      }
+      if (amount === 0) {
+        return {
+          ...row,
+          quantity: 0,
+          rate: Math.max(0, finiteOr(row.rate, 0)),
+        };
+      }
+      return {
+        ...row,
+        quantity: 1,
+        rate: amount,
+      };
+    }),
+  };
+}
+
 function childMetric(
   parent: MetricDef,
   options: {

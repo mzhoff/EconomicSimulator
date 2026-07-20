@@ -1,5 +1,6 @@
 import { Calculator, Plus, TableProperties, Trash2, X } from 'lucide-react';
 import { useMemo, useState, type FormEvent } from 'react';
+import { convertMetricBreakdownTemplate } from './metric-engine';
 import type {
   MetricBreakdownDef,
   MetricDef,
@@ -106,12 +107,7 @@ function MetricBreakdownEditorContent({
   };
 
   const changeTemplate = (template: MetricBreakdownInput['template']) => {
-    setDraft((current) => ({
-      template,
-      rows: current.rows.map((row) => template === 'amount_list'
-        ? { ...row, amount: rowTotal(row, current.template), quantity: undefined, rate: undefined }
-        : { ...row, quantity: 1, rate: rowTotal(row, current.template), amount: undefined }),
-    }));
+    setDraft((current) => convertMetricBreakdownTemplate(current, template));
   };
 
   const addRow = () => {

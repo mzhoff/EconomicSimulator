@@ -4,6 +4,7 @@ export {
   allBreakdownChildMetricIds,
   breakdownChildMetricIds,
   canHaveMetricBreakdown,
+  convertMetricBreakdownTemplate,
   removeMetricBreakdown,
   toggleMetricBreakdown,
   upsertMetricBreakdown,

@@ -40,11 +40,17 @@ interface InspectorPanelProps {
   onChangeShock: (shock: Shock) => void;
 }
 
-const summaryMetrics = [
+const stationSummaryMetrics = [
   { id: 'rental_revenue', label: 'Арендная выручка' },
   { id: 'cash_contribution', label: 'Денежный вклад' },
   { id: 'profit_before_tax', label: 'Прибыль до налогов' },
   { id: 'payback_months', label: 'Окупаемость' },
+];
+
+const cashFlowSummaryMetrics = [
+  { id: 'total_revenue', label: 'Доходы' },
+  { id: 'total_cost', label: 'Расходы' },
+  { id: 'profit', label: 'Прибыль' },
 ];
 
 function scenarioDelta(current: number | null, baseline: number | null): string | null {
@@ -54,8 +60,13 @@ function scenarioDelta(current: number | null, baseline: number | null): string 
   return `${delta > 0 ? '+' : ''}${delta.toFixed(1)}% vs Base`;
 }
 
-function thresholdText(result: ThresholdResult): string {
-  return result.reached && result.value !== null ? `${result.value.toFixed(2)} аренд/день` : 'Не достигнута';
+function thresholdText(
+  result: ThresholdResult,
+  metrics: Record<string, MetricDef>,
+): string {
+  if (!result.reached || result.value === null) return result.message ?? 'Не достигнута';
+  const input = metrics[result.inputId];
+  return input ? fmt(result.value, input.unit) : result.value.toFixed(2);
 }
 
 function shockDisplayAmount(shock: Shock): number {
@@ -91,6 +102,8 @@ export function InspectorPanel({
   const activeNorthStar = model.activeNorthStarId
     ? metrics[model.activeNorthStarId]
     : undefined;
+  const isCashFlowModel = Boolean(model.metrics.total_revenue && model.metrics.total_cost && model.metrics.profit);
+  const summaryMetrics = isCashFlowModel ? cashFlowSummaryMetrics : stationSummaryMetrics;
 
   return (
     <>
@@ -255,16 +268,22 @@ export function InspectorPanel({
               <span className="text-[0.6875rem] text-foreground" style={{ fontWeight: 600 }}>Критические значения</span>
             </div>
             <div className="space-y-[0.375rem]">
-              <ThresholdRow label="Безубыточность" value={thresholdText(thresholds.breakEven)} />
-              <ThresholdRow label="Payback ≤ 12 мес." value={thresholdText(thresholds.payback12)} />
-              <ThresholdRow label="Payback ≤ 24 мес." value={thresholdText(thresholds.payback24)} />
+              <ThresholdRow label="Безубыточность" value={thresholdText(thresholds.breakEven, metrics)} />
+              {model.metrics.payback_months ? (
+                <>
+                  <ThresholdRow label="Payback ≤ 12 мес." value={thresholdText(thresholds.payback12, metrics)} />
+                  <ThresholdRow label="Payback ≤ 24 мес." value={thresholdText(thresholds.payback24, metrics)} />
+                </>
+              ) : null}
             </div>
           </section>
 
           <section className="p-[1rem]">
             <div className="flex items-center gap-[0.25rem] mb-[0.5rem]">
               <BarChart3 className="size-[0.75rem] text-muted-foreground" />
-              <span className="text-[0.6875rem] text-foreground" style={{ fontWeight: 600 }}>Экономика станции</span>
+              <span className="text-[0.6875rem] text-foreground" style={{ fontWeight: 600 }}>
+                {isCashFlowModel ? 'Денежный поток' : 'Экономика станции'}
+              </span>
             </div>
             <div className="space-y-[0.375rem]">
               {summaryMetrics.map(({ id, label }) => {

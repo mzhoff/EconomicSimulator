@@ -307,6 +307,31 @@ export function computeTokBeriThresholds(
   payback12: ThresholdResult;
   payback24: ThresholdResult;
 } {
+  if (model.metrics.total_rents && model.metrics.profit) {
+    const input = model.metrics.total_rents;
+    const unavailable = (targetMetricId: string): ThresholdResult => ({
+      inputId: input.id,
+      targetMetricId,
+      value: null,
+      reached: false,
+      iterations: 0,
+      message: 'Эта метрика пока не добавлена в минимальную модель.',
+    });
+    return {
+      breakEven: solveThreshold(model, scenarioId, inputOverrides, {
+        inputId: input.id,
+        targetMetricId: 'profit',
+        targetValue: 0,
+        condition: 'gte',
+        min: input.inputConfig?.min ?? 0,
+        max: input.inputConfig?.max ?? 10_000,
+        tolerance: 0.0001,
+      }),
+      payback12: unavailable('payback_months'),
+      payback24: unavailable('payback_months'),
+    };
+  }
+
   const common = {
     inputId: 'rentals_per_day',
     min: 0,

@@ -1,6 +1,11 @@
 import { memo, useMemo } from 'react';
 import type { Edge, GraphFocusState, MetricDef } from './metric-engine';
-import { getMetricPortPosition } from './metric-geometry';
+import {
+  getConnectionPath,
+  getPortSideVector,
+  type EdgeLineStyle,
+} from './edge-routing';
+import { getSmartMetricPorts } from './metric-geometry';
 
 const COLORS = {
   calculation: '#94a3b8',
@@ -23,6 +28,7 @@ interface CanvasEdgesProps {
   focus: GraphFocusState;
   impactDeltas?: Record<string, number>;
   scale: number;
+  lineStyle: EdgeLineStyle;
   hoveredEdgeKey: string | null;
   onHoveredEdgeChange: (edge: Edge | null) => void;
 }
@@ -58,8 +64,6 @@ const MARKER_COLORS = {
 } as const;
 
 const edgeKey = (edge: Edge): string => `${edge.from}-${edge.to}`;
-const rounded = (value: number): number => Math.round(value * 10) / 10;
-
 function operationSymbol(edge: Edge): string | undefined {
   if (edge.type !== 'calc') return undefined;
   if (edge.operation === 'add') return '+';
@@ -128,25 +132,6 @@ function computeProblemPaths(
     error: pathsForStatus('error'),
     warning: pathsForStatus('warning'),
   };
-}
-
-function connectionPath(x1: number, y1: number, x2: number, y2: number, scale: number): string {
-  if (Math.abs(y2 - y1) < 0.5) return `M ${rounded(x1)} ${rounded(y1)} H ${rounded(x2)}`;
-  const middleX = (x1 + x2) / 2;
-  if (x2 <= x1 + 40 / scale) {
-    return `M ${rounded(x1)} ${rounded(y1)} C ${rounded(middleX)} ${rounded(y1)}, ${rounded(middleX)} ${rounded(y2)}, ${rounded(x2)} ${rounded(y2)}`;
-  }
-
-  const direction = y2 > y1 ? 1 : -1;
-  const radius = Math.min(12 / scale, Math.abs(y2 - y1) / 2, Math.abs(x2 - x1) / 6);
-  return [
-    `M ${rounded(x1)} ${rounded(y1)}`,
-    `H ${rounded(middleX - radius)}`,
-    `Q ${rounded(middleX)} ${rounded(y1)} ${rounded(middleX)} ${rounded(y1 + direction * radius)}`,
-    `V ${rounded(y2 - direction * radius)}`,
-    `Q ${rounded(middleX)} ${rounded(y2)} ${rounded(middleX + radius)} ${rounded(y2)}`,
-    `H ${rounded(x2)}`,
-  ].join(' ');
 }
 
 function edgePresentation(
@@ -294,6 +279,7 @@ export const CanvasEdges = memo(function CanvasEdges({
   focus,
   impactDeltas,
   scale,
+  lineStyle,
   hoveredEdgeKey,
   onHoveredEdgeChange,
 }: CanvasEdgesProps) {
@@ -338,13 +324,25 @@ export const CanvasEdges = memo(function CanvasEdges({
         const renderKey = `${edge.type}-${relationKey}`;
         const presentation = edgePresentation(edge, metrics, focus, impactDeltas, problemPaths);
         const isHovered = hoveredEdgeKey === relationKey;
-        const sourcePort = getMetricPortPosition(fromMetric.position, fromMetric.behavior, 'output');
-        const targetPort = getMetricPortPosition(toMetric.position, toMetric.behavior, 'input');
-        const x1 = sourcePort.x;
-        const y1 = sourcePort.y;
-        const x2 = targetPort.x;
-        const y2 = targetPort.y;
-        const path = connectionPath(x1, y1, x2, y2, safeScale);
+        const ports = getSmartMetricPorts(
+          fromMetric.position,
+          fromMetric.behavior,
+          toMetric.position,
+          toMetric.behavior,
+        );
+        const { x: x1, y: y1 } = ports.source.point;
+        const { x: x2, y: y2 } = ports.target.point;
+        const path = getConnectionPath(
+          ports.source.point,
+          ports.target.point,
+          ports.source.side,
+          ports.target.side,
+          lineStyle,
+          safeScale,
+        );
+        const targetVector = getPortSideVector(ports.target.side);
+        const operatorX = x2 + targetVector.x * 17 / safeScale;
+        const operatorY = y2 + targetVector.y * 17 / safeScale;
         const screenWidth = isHovered ? Math.max(presentation.screenWidth + 0.75, 3.25) : presentation.screenWidth;
         const strokeWidth = screenWidth / safeScale;
         const dashArray = presentation.dash?.map((value) => value / safeScale).join(' ');
@@ -376,7 +374,7 @@ export const CanvasEdges = memo(function CanvasEdges({
               </>
             ) : null}
             {edge.type === 'influence' && presentation.opacity > 0.2 ? (
-              <g transform={`translate(${x2 - 16 / safeScale} ${y2 - 10 / safeScale})`}>
+              <g transform={`translate(${operatorX} ${operatorY})`}>
                 <circle r={7 / safeScale} fill="#ffffff" stroke={presentation.color} strokeWidth={1.5 / safeScale} />
                 <text
                   x={0}
@@ -391,7 +389,7 @@ export const CanvasEdges = memo(function CanvasEdges({
               </g>
             ) : null}
             {edge.type === 'calc' && presentation.operator && presentation.opacity > 0.2 ? (
-              <g transform={`translate(${x2 - 17 / safeScale} ${y2 - 11 / safeScale})`}>
+              <g transform={`translate(${operatorX} ${operatorY})`}>
                 <circle
                   r={7.5 / safeScale}
                   fill="#ffffff"

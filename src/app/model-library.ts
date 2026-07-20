@@ -2,10 +2,15 @@ import type { StorageResult } from '../core/storage';
 import { validateWorkspaceDocument } from '../core/schema';
 import type { WorkspaceDocument } from '../core/model';
 import { upgradeOneOffBehaviors } from '../core/migration';
+import {
+  CASH_FLOW_MODEL_ID,
+  LEGACY_TOKBERI_MODEL_ID,
+} from '../core/cash-flow-template';
 
 export const MODEL_LIBRARY_VERSION = 1 as const;
 export const MODEL_LIBRARY_STORAGE_KEY = 'economic-simulator:model-library:v1';
 export const MODEL_LIBRARY_BEHAVIOR_BACKUP_KEY = 'economic-simulator:model-library:backup:one-off';
+export const MODEL_LIBRARY_CASH_FLOW_BACKUP_KEY = 'economic-simulator:model-library:backup:cash-flow-reset';
 
 export interface ModelLibraryEntry {
   workspace: WorkspaceDocument;
@@ -62,6 +67,27 @@ function serializeLibrary(library: ModelLibraryState): string {
   return JSON.stringify(library, null, 2);
 }
 
+function replaceLegacyStarterModel(
+  library: ModelLibraryState,
+  fallbackWorkspace: WorkspaceDocument,
+): { library: ModelLibraryState; changed: boolean } {
+  if (!library.entries[LEGACY_TOKBERI_MODEL_ID]) return { library, changed: false };
+
+  const entries = { ...library.entries };
+  delete entries[LEGACY_TOKBERI_MODEL_ID];
+  entries[CASH_FLOW_MODEL_ID] = { workspace: fallbackWorkspace };
+  return {
+    changed: true,
+    library: {
+      ...library,
+      activeModelId: library.activeModelId === LEGACY_TOKBERI_MODEL_ID
+        ? CASH_FLOW_MODEL_ID
+        : library.activeModelId,
+      entries,
+    },
+  };
+}
+
 function upgradeLibraryBehaviors(value: unknown): { value: unknown; changed: boolean } {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return { value, changed: false };
@@ -113,6 +139,15 @@ export function loadModelLibrary(
       const upgraded = upgradeLibraryBehaviors(JSON.parse(raw) as unknown);
       const parsed = validateLibrary(upgraded.value);
       if (parsed) {
+        const reset = replaceLegacyStarterModel(parsed, fallbackWorkspace);
+        if (reset.changed) {
+          storage.setItem(MODEL_LIBRARY_CASH_FLOW_BACKUP_KEY, raw);
+          storage.setItem(MODEL_LIBRARY_STORAGE_KEY, serializeLibrary(reset.library));
+          return {
+            value: reset.library,
+            warning: 'Старая схема TokBeri сохранена в backup и заменена моделью денежного потока.',
+          };
+        }
         if (upgraded.changed) {
           storage.setItem(MODEL_LIBRARY_BEHAVIOR_BACKUP_KEY, raw);
           storage.setItem(MODEL_LIBRARY_STORAGE_KEY, serializeLibrary(parsed));

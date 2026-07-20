@@ -3,6 +3,7 @@ import {
   getMetricCardBounds,
   getMetricCardSize,
   getMetricPortPosition,
+  getSmartMetricPorts,
 } from './metric-geometry';
 
 describe('metric card geometry', () => {
@@ -38,20 +39,48 @@ describe('metric card geometry', () => {
     });
   });
 
-  it('places connection ports in the vertical center of each card', () => {
+  it('places connection ports on all four card faces', () => {
     expect(getMetricCardBounds({ x: 100, y: 40 }, 'rate')).toMatchObject({
       right: 324,
       bottom: 128,
       centerX: 212,
       centerY: 84,
     });
-    expect(getMetricPortPosition({ x: 100, y: 40 }, 'rate', 'input')).toEqual({
+    expect(getMetricPortPosition({ x: 100, y: 40 }, 'rate', 'left')).toEqual({
       x: 100,
       y: 84,
     });
-    expect(getMetricPortPosition({ x: 100, y: 40 }, 'rate', 'output')).toEqual({
+    expect(getMetricPortPosition({ x: 100, y: 40 }, 'rate', 'right')).toEqual({
       x: 324,
       y: 84,
     });
+    expect(getMetricPortPosition({ x: 100, y: 40 }, 'rate', 'top')).toEqual({
+      x: 212,
+      y: 40,
+    });
+    expect(getMetricPortPosition({ x: 100, y: 40 }, 'rate', 'bottom')).toEqual({
+      x: 212,
+      y: 128,
+    });
+  });
+
+  it('chooses ports from the relative card positions', () => {
+    const vertical = getSmartMetricPorts(
+      { x: 100, y: 300 },
+      'flow',
+      { x: 100, y: 20 },
+      'flow',
+    );
+    expect(vertical.source.side).toBe('top');
+    expect(vertical.target.side).toBe('bottom');
+
+    const horizontal = getSmartMetricPorts(
+      { x: 100, y: 100 },
+      'rate',
+      { x: 600, y: 140 },
+      'flow',
+    );
+    expect(horizontal.source.side).toBe('right');
+    expect(horizontal.target.side).toBe('left');
   });
 });

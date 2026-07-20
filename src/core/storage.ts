@@ -1,4 +1,4 @@
-import { createTokBeriModel } from './tokberi-template';
+import { createCashFlowModel } from './cash-flow-template';
 import { MODEL_SCHEMA_VERSION } from './model';
 import type { ModelState, ViewportState, WorkspaceDocument } from './model';
 import {
@@ -8,11 +8,17 @@ import {
 } from './migration';
 import { parseWorkspaceJson, validateWorkspaceDocument } from './schema';
 
-export const WORKSPACE_STORAGE_KEY = 'economic-simulator:workspace:v2';
-export const LAST_VALID_STORAGE_KEY = 'economic-simulator:last-valid:v2';
+export const WORKSPACE_STORAGE_KEY = 'economic-simulator:workspace:v3';
+export const LAST_VALID_STORAGE_KEY = 'economic-simulator:last-valid:v3';
 export const MIGRATION_BACKUP_KEY = 'economic-simulator:migration-backup:v2';
 export const BEHAVIOR_UPGRADE_BACKUP_KEY = 'economic-simulator:behavior-upgrade-backup:one-off';
+export const CASH_FLOW_RESET_BACKUP_KEY = 'economic-simulator:cash-flow-reset-backup:v2';
 export const LEGACY_WORKSPACE_STORAGE_KEY = 'economic-simulator:workspace:v1';
+export const PREVIOUS_WORKSPACE_STORAGE_KEY = 'economic-simulator:workspace:v2';
+const PREVIOUS_WORKSPACE_STORAGE_KEYS = [
+  PREVIOUS_WORKSPACE_STORAGE_KEY,
+  'economic-simulator:last-valid:v2',
+];
 const LEGACY_STORAGE_KEYS = [
   LEGACY_WORKSPACE_STORAGE_KEY,
   'economic-simulator:last-valid:v1',
@@ -26,7 +32,7 @@ export interface StorageResult<T> {
 }
 
 export function createWorkspaceDocument(
-  model: ModelState = createTokBeriModel(),
+  model: ModelState = createCashFlowModel(),
   options: Partial<Pick<WorkspaceDocument, 'activeScenarioId' | 'inputOverridesByScenario' | 'viewport'>> = {},
 ): WorkspaceDocument {
   return {
@@ -36,6 +42,23 @@ export function createWorkspaceDocument(
     activeScenarioId: options.activeScenarioId ?? 'base',
     inputOverridesByScenario: options.inputOverridesByScenario ?? {},
     viewport: options.viewport ?? { x: 100, y: 20, scale: 0.35 },
+  };
+}
+
+function resetPreviousWorkspace(storage: Storage): StorageResult<WorkspaceDocument> | null {
+  const previous = PREVIOUS_WORKSPACE_STORAGE_KEYS
+    .map((key) => storage.getItem(key))
+    .find((value): value is string => Boolean(value));
+  if (!previous) return null;
+
+  const workspace = createWorkspaceDocument();
+  const serialized = serializeWorkspace(workspace);
+  storage.setItem(CASH_FLOW_RESET_BACKUP_KEY, previous);
+  storage.setItem(WORKSPACE_STORAGE_KEY, serialized);
+  storage.setItem(LAST_VALID_STORAGE_KEY, serialized);
+  return {
+    value: workspace,
+    warning: 'Старая схема сохранена в backup и заменена минимальной моделью денежного потока.',
   };
 }
 
@@ -141,13 +164,16 @@ export function loadWorkspace(storage: Storage | undefined = globalThis.localSto
       }
     }
 
+    const reset = resetPreviousWorkspace(storage);
+    if (reset) return reset;
+
     const migrated = migrateLegacyStorage(storage);
     if (migrated) return migrated;
     return current
-      ? { value: fallback, warning: 'Сохранённая модель не прошла проверку. Открыт безопасный шаблон TokBeri.' }
+      ? { value: fallback, warning: 'Сохранённая модель не прошла проверку. Открыт безопасный шаблон денежного потока.' }
       : { value: fallback };
   } catch {
-    return { value: fallback, warning: 'Не удалось прочитать Local Storage; открыт безопасный шаблон.' };
+    return { value: fallback, warning: 'Не удалось прочитать Local Storage; открыт безопасный шаблон денежного потока.' };
   }
 }
 

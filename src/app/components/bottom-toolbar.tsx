@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import {
   Eye,
   Focus,
@@ -15,6 +16,7 @@ import {
   ZoomIn,
   ZoomOut,
 } from 'lucide-react';
+import type { EdgeLineStyle } from './edge-routing';
 
 interface BottomToolbarProps {
   allCollapsed: boolean;
@@ -36,6 +38,8 @@ interface BottomToolbarProps {
   onGroupSelected?: () => void;
   canGroup?: boolean;
   onManageDomains?: () => void;
+  edgeLineStyle: EdgeLineStyle;
+  onEdgeLineStyleChange: (style: EdgeLineStyle) => void;
 }
 
 export function BottomToolbar({
@@ -58,7 +62,11 @@ export function BottomToolbar({
   onGroupSelected,
   canGroup = false,
   onManageDomains,
+  edgeLineStyle,
+  onEdgeLineStyleChange,
 }: BottomToolbarProps) {
+  const [lineStyleMenuOpen, setLineStyleMenuOpen] = useState(false);
+
   return (
     <div
       data-canvas-interactive="true"
@@ -76,6 +84,46 @@ export function BottomToolbar({
         onClick={onToggleConnectionMode}
         disabled={!onToggleConnectionMode}
       />
+      <div className="relative">
+        {lineStyleMenuOpen ? (
+          <div
+            role="menu"
+            aria-label="Форма линий"
+            className="absolute bottom-[2.625rem] left-1/2 z-40 w-[10.5rem] -translate-x-1/2 rounded-[var(--radius-lg)] border border-border bg-card p-[0.25rem] shadow-lg"
+          >
+            {([
+              ['curved', 'Кривые'],
+              ['orthogonal', 'Угловые'],
+              ['straight', 'Прямые'],
+            ] as const).map(([style, label]) => (
+              <button
+                key={style}
+                type="button"
+                role="menuitemradio"
+                aria-checked={edgeLineStyle === style}
+                className={`flex w-full items-center gap-[0.5rem] rounded-[var(--radius-md)] px-[0.5rem] py-[0.375rem] text-left text-[0.6875rem] ${
+                  edgeLineStyle === style
+                    ? 'bg-primary text-primary-foreground'
+                    : 'text-foreground hover:bg-accent'
+                }`}
+                onClick={() => {
+                  onEdgeLineStyleChange(style);
+                  setLineStyleMenuOpen(false);
+                }}
+              >
+                <LineStylePreview style={style} />
+                {label}
+              </button>
+            ))}
+          </div>
+        ) : null}
+        <ToolBtn
+          icon={<LineStylePreview style={edgeLineStyle} compact />}
+          tooltip="Выбрать форму линий"
+          active={lineStyleMenuOpen}
+          onClick={() => setLineStyleMenuOpen((open) => !open)}
+        />
+      </div>
       <ToolBtn
         icon={<Layers />}
         tooltip={canGroup ? 'Сгруппировать выбранные метрики (⌘G)' : 'Выберите несколько метрик для группировки'}
@@ -109,6 +157,30 @@ export function BottomToolbar({
         onClick={onToggleAll}
       />
     </div>
+  );
+}
+
+function LineStylePreview({
+  style,
+  compact = false,
+}: {
+  style: EdgeLineStyle;
+  compact?: boolean;
+}) {
+  const path = style === 'curved'
+    ? 'M 2 14 C 9 14, 9 2, 22 2'
+    : style === 'orthogonal'
+      ? 'M 2 14 H 12 V 2 H 22'
+      : 'M 2 14 L 22 2';
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox="0 0 24 16"
+      className={compact ? 'size-[1rem]' : 'h-[1rem] w-[1.5rem]'}
+      fill="none"
+    >
+      <path d={path} stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
   );
 }
 

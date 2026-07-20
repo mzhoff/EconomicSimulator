@@ -10,13 +10,31 @@ import {
 } from 'lucide-react';
 import type { MetricDef } from '../../core/model';
 import { behaviorLabel, fmt } from '../../core/presentation';
-import { getMetricCardSize } from './metric-geometry';
+import {
+  getMetricCardSize,
+  METRIC_PORT_SIDES,
+  type MetricPortSide,
+} from './metric-geometry';
 
 const statusColors: Record<string, string> = {
   valid: 'border-border',
   warning: 'border-amber-400',
   error: 'border-red-400',
   incomplete: 'border-dashed border-muted-foreground/40',
+};
+
+const portClasses: Record<MetricPortSide, string> = {
+  left: 'left-[-0.4375rem] top-1/2 -translate-y-1/2',
+  right: 'right-[-0.4375rem] top-1/2 -translate-y-1/2',
+  top: 'left-1/2 top-[-0.4375rem] -translate-x-1/2',
+  bottom: 'bottom-[-0.4375rem] left-1/2 -translate-x-1/2',
+};
+
+const portLabels: Record<MetricPortSide, string> = {
+  left: 'слева',
+  right: 'справа',
+  top: 'сверху',
+  bottom: 'снизу',
 };
 
 interface MetricCardProps {
@@ -30,7 +48,11 @@ interface MetricCardProps {
   delta?: number;
   impactActive: boolean;
   formulaSource?: string;
-  onConnectionPointerDown?: (id: string, event: React.PointerEvent<HTMLButtonElement>) => void;
+  onConnectionPointerDown?: (
+    id: string,
+    side: MetricPortSide,
+    event: React.PointerEvent<HTMLButtonElement>,
+  ) => void;
   isNorthStar?: boolean;
 }
 
@@ -223,26 +245,25 @@ export function MetricCard({
           </div>
         )}
 
-        <span
-          aria-hidden="true"
-          data-connection-target={metric.id}
-          className="absolute left-[-0.3125rem] top-1/2 size-[0.625rem] -translate-y-1/2 rounded-full border-2 border-card bg-muted-foreground/50 opacity-0 transition-opacity group-hover:opacity-100"
-        />
-        {onConnectionPointerDown ? (
-          <button
-            type="button"
-            aria-label={`Создать расчётную связь из метрики «${metric.name}»`}
-            title="Протянуть Calculation-связь"
-            data-connection-source={metric.id}
-            className="absolute right-[-0.4375rem] top-1/2 size-[0.875rem] -translate-y-1/2 rounded-full border-[0.1875rem] border-card bg-primary opacity-0 shadow-sm transition-all hover:scale-125 group-hover:opacity-100 focus:opacity-100 cursor-crosshair"
-            onPointerDown={(event) => {
-              event.preventDefault();
-              event.stopPropagation();
-              onConnectionPointerDown(metric.id, event);
-            }}
-            onClick={(event) => event.stopPropagation()}
-          />
-        ) : null}
+        {onConnectionPointerDown
+          ? METRIC_PORT_SIDES.map((side) => (
+              <button
+                key={side}
+                type="button"
+                aria-label={`Создать расчётную связь из метрики «${metric.name}» ${portLabels[side]}`}
+                title={`Протянуть связь ${portLabels[side]}`}
+                data-connection-source={metric.id}
+                data-connection-side={side}
+                className={`absolute size-[0.875rem] rounded-full border-[0.1875rem] border-card bg-primary opacity-0 shadow-sm transition-all hover:scale-125 group-hover:opacity-100 focus:opacity-100 cursor-crosshair ${portClasses[side]}`}
+                onPointerDown={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  onConnectionPointerDown(metric.id, side, event);
+                }}
+                onClick={(event) => event.stopPropagation()}
+              />
+            ))
+          : null}
       </div>
     </div>
   );

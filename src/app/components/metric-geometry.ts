@@ -17,7 +17,9 @@ export interface MetricCardBounds extends MetricCardSize {
   centerY: number;
 }
 
-export type MetricPortSide = 'input' | 'output';
+export type MetricPortSide = 'left' | 'right' | 'top' | 'bottom';
+
+export const METRIC_PORT_SIDES: MetricPortSide[] = ['left', 'right', 'top', 'bottom'];
 
 const METRIC_CARD_SIZES: Record<BuilderMetricBehavior, MetricCardSize> = {
   stock: {
@@ -67,8 +69,44 @@ export function getMetricPortPosition(
   side: MetricPortSide,
 ): { x: number; y: number } {
   const bounds = getMetricCardBounds(position, behavior);
+  if (side === 'left') return { x: bounds.x, y: bounds.centerY };
+  if (side === 'right') return { x: bounds.right, y: bounds.centerY };
+  if (side === 'top') return { x: bounds.centerX, y: bounds.y };
+  return { x: bounds.centerX, y: bounds.bottom };
+}
+
+export function getSmartMetricPorts(
+  sourcePosition: { x: number; y: number },
+  sourceBehavior: MetricBehavior,
+  targetPosition: { x: number; y: number },
+  targetBehavior: MetricBehavior,
+): {
+  source: { side: MetricPortSide; point: { x: number; y: number } };
+  target: { side: MetricPortSide; point: { x: number; y: number } };
+} {
+  const sourceBounds = getMetricCardBounds(sourcePosition, sourceBehavior);
+  const targetBounds = getMetricCardBounds(targetPosition, targetBehavior);
+  const deltaX = targetBounds.centerX - sourceBounds.centerX;
+  const deltaY = targetBounds.centerY - sourceBounds.centerY;
+  const normalizedX = Math.abs(deltaX) / Math.max(1, (sourceBounds.width + targetBounds.width) / 2);
+  const normalizedY = Math.abs(deltaY) / Math.max(1, (sourceBounds.height + targetBounds.height) / 2);
+
+  const [sourceSide, targetSide]: [MetricPortSide, MetricPortSide] = normalizedX >= normalizedY
+    ? deltaX >= 0
+      ? ['right', 'left']
+      : ['left', 'right']
+    : deltaY >= 0
+      ? ['bottom', 'top']
+      : ['top', 'bottom'];
+
   return {
-    x: side === 'input' ? bounds.x : bounds.right,
-    y: bounds.centerY,
+    source: {
+      side: sourceSide,
+      point: getMetricPortPosition(sourcePosition, sourceBehavior, sourceSide),
+    },
+    target: {
+      side: targetSide,
+      point: getMetricPortPosition(targetPosition, targetBehavior, targetSide),
+    },
   };
 }

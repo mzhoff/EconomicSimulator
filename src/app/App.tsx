@@ -75,7 +75,13 @@ import {
   getMetricCardBounds,
   getMetricCardSize,
   getMetricPortPosition,
+  type MetricPortSide,
 } from './components/metric-geometry';
+import {
+  getConnectionPath,
+  oppositeMetricPortSide,
+  type EdgeLineStyle,
+} from './components/edge-routing';
 import { VisualGroupFrame } from './components/visual-group-frame';
 import {
   VisualGroupDialog,
@@ -89,6 +95,7 @@ const HISTORY_LIMIT = 50;
 const CANVAS_MENU_WIDTH = 208;
 const CANVAS_MENU_HEIGHT = 44;
 const CANVAS_MENU_EDGE_GAP = 8;
+const EDGE_LINE_STYLE_STORAGE_KEY = 'economic-simulator:edge-line-style:v1';
 
 interface HistoryState {
   past: ModelState[];
@@ -136,6 +143,7 @@ interface EditorState {
 
 interface ConnectionDraft {
   sourceId: string;
+  sourceSide: MetricPortSide;
   start: CanvasPoint;
   end: CanvasPoint;
 }
@@ -288,6 +296,16 @@ export default function App() {
   const [domainManagerInitialId, setDomainManagerInitialId] = useState<string | null>(null);
   const [connectionMode, setConnectionMode] = useState(false);
   const [connectionDraft, setConnectionDraft] = useState<ConnectionDraft | null>(null);
+  const [edgeLineStyle, setEdgeLineStyle] = useState<EdgeLineStyle>(() => {
+    try {
+      const stored = globalThis.localStorage?.getItem(EDGE_LINE_STYLE_STORAGE_KEY);
+      return stored === 'orthogonal' || stored === 'straight' || stored === 'curved'
+        ? stored
+        : 'curved';
+    } catch {
+      return 'curved';
+    }
+  });
   const [visualGroupEditor, setVisualGroupEditor] = useState<VisualGroupEditorState | null>(null);
 
   const { transform, setTransform, zoomIn, zoomOut, fitToView } = useCanvasControls(
@@ -299,6 +317,14 @@ export default function App() {
   const libraryRef = useRef(initial.library);
   const selectionRef = useRef<{ start: CanvasPoint; base: Set<string>; moved: boolean } | null>(null);
   const didInitialFitRef = useRef(false);
+
+  useEffect(() => {
+    try {
+      globalThis.localStorage?.setItem(EDGE_LINE_STYLE_STORAGE_KEY, edgeLineStyle);
+    } catch {
+      // The visual preference is non-critical when Local Storage is unavailable.
+    }
+  }, [edgeLineStyle]);
 
   const currentOverrides = useMemo(
     () => inputOverridesByScenario[scenarioId] ?? {},
@@ -420,11 +446,17 @@ export default function App() {
   }, [contentSize.height, contentSize.width, fitToView]);
 
   useEffect(() => {
+    const openingResetCashFlow = Boolean(initial.warning?.includes('денежного потока'));
     if (
       didInitialFitRef.current
-      || initial.workspace.viewport.scale !== 1
-      || initial.workspace.viewport.x !== 0
-      || initial.workspace.viewport.y !== 0
+      || (
+        !openingResetCashFlow
+        && (
+          initial.workspace.viewport.scale !== 1
+          || initial.workspace.viewport.x !== 0
+          || initial.workspace.viewport.y !== 0
+        )
+      )
     ) return;
     didInitialFitRef.current = true;
     const frame = window.requestAnimationFrame(handleFitToView);
@@ -919,12 +951,18 @@ export default function App() {
 
   const handleConnectionPointerDown = useCallback((
     sourceId: string,
+    sourceSide: MetricPortSide,
     event: ReactPointerEvent<HTMLButtonElement>,
   ) => {
     const source = model.metrics[sourceId];
     if (!source) return;
-    const start = getMetricPortPosition(source.position, source.behavior, 'output');
-    setConnectionDraft({ sourceId, start, end: worldPointFromClient(event.clientX, event.clientY) });
+    const start = getMetricPortPosition(source.position, source.behavior, sourceSide);
+    setConnectionDraft({
+      sourceId,
+      sourceSide,
+      start,
+      end: worldPointFromClient(event.clientX, event.clientY),
+    });
 
     const handleMove = (moveEvent: PointerEvent) => {
       const end = worldPointFromClient(moveEvent.clientX, moveEvent.clientY);
@@ -1387,6 +1425,7 @@ export default function App() {
             focus={graphFocus}
             impactDeltas={impactActive ? impact?.deltas : undefined}
             scale={transform.scale}
+            lineStyle={edgeLineStyle}
             hoveredEdgeKey={hoveredEdgeKey}
             onHoveredEdgeChange={setHoveredEdge}
           />
@@ -1419,7 +1458,14 @@ export default function App() {
           {connectionDraft ? (
             <svg className="pointer-events-none absolute inset-0 z-[15] h-full w-full overflow-visible">
               <path
-                d={`M ${connectionDraft.start.x} ${connectionDraft.start.y} C ${(connectionDraft.start.x + connectionDraft.end.x) / 2} ${connectionDraft.start.y}, ${(connectionDraft.start.x + connectionDraft.end.x) / 2} ${connectionDraft.end.y}, ${connectionDraft.end.x} ${connectionDraft.end.y}`}
+                d={getConnectionPath(
+                  connectionDraft.start,
+                  connectionDraft.end,
+                  connectionDraft.sourceSide,
+                  oppositeMetricPortSide(connectionDraft.sourceSide),
+                  edgeLineStyle,
+                  transform.scale,
+                )}
                 fill="none"
                 stroke="#7c3aed"
                 strokeWidth={2.5 / Math.max(transform.scale, 0.05)}
@@ -1487,8 +1533,10 @@ export default function App() {
           connectionModeActive={connectionMode}
           onToggleConnectionMode={() => {
             setConnectionMode((active) => !active);
-            setNotice('Протяните линию из правого порта исходной метрики в целевую карточку — откроется Formula Composer.');
+            setNotice('Протяните линию из любого порта исходной метрики в целевую карточку — откроется Formula Composer.');
           }}
+          edgeLineStyle={edgeLineStyle}
+          onEdgeLineStyleChange={setEdgeLineStyle}
           onGroupSelected={handleOpenGroupDialog}
           canGroup={canGroupSelection}
           onManageDomains={() => handleOpenDomainManager()}

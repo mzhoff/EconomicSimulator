@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
+import {
+  CASH_FLOW_MODEL_ID,
+  createCashFlowModel,
+  LEGACY_TOKBERI_MODEL_ID,
+} from '../core/cash-flow-template';
 import { createWorkspaceDocument } from '../core/storage';
 import { createTokBeriModel } from '../core/tokberi-template';
 import {
+  MODEL_LIBRARY_CASH_FLOW_BACKUP_KEY,
   MODEL_LIBRARY_STORAGE_KEY,
   MODEL_LIBRARY_BEHAVIOR_BACKUP_KEY,
   deleteEntry,
@@ -41,7 +47,7 @@ class MemoryStorage implements Storage {
 }
 
 function workspace() {
-  return createWorkspaceDocument(createTokBeriModel());
+  return createWorkspaceDocument(createCashFlowModel());
 }
 
 describe('model library', () => {
@@ -96,13 +102,16 @@ describe('model library', () => {
     );
 
     expect(saveModelLibrary(library, storage)).toEqual({ value: true });
-    expect(loadModelLibrary(fallback, storage).value).toEqual(library);
+    expect(loadModelLibrary(fallback, storage).value).toEqual(
+      JSON.parse(JSON.stringify(library)),
+    );
   });
 
   it('upgrades One-off metrics in every saved model and keeps a backup', () => {
     const storage = new MemoryStorage();
     const fallback = workspace();
-    const oldWorkspace = structuredClone(fallback);
+    const oldWorkspace = createWorkspaceDocument(createTokBeriModel());
+    oldWorkspace.model.id = 'legacy-one-off-test';
     oldWorkspace.model.metrics.delivery_cost.behavior = 'stock';
     oldWorkspace.model.metrics.installation_cost.behavior = 'stock';
     const oldLibrary = {
@@ -123,5 +132,28 @@ describe('model library', () => {
     expect(migrated.total_capex.behavior).toBe('stock');
     expect(storage.getItem(MODEL_LIBRARY_BEHAVIOR_BACKUP_KEY)).toBe(serialized);
     expect(loaded.warning).toContain('One-off');
+  });
+
+  it('replaces only the old starter graph and preserves its backup', () => {
+    const storage = new MemoryStorage();
+    const fallback = workspace();
+    const oldWorkspace = createWorkspaceDocument(createTokBeriModel());
+    const oldLibrary = {
+      version: 1,
+      activeModelId: LEGACY_TOKBERI_MODEL_ID,
+      entries: {
+        [LEGACY_TOKBERI_MODEL_ID]: { workspace: oldWorkspace },
+      },
+    };
+    const serialized = JSON.stringify(oldLibrary);
+    storage.setItem(MODEL_LIBRARY_STORAGE_KEY, serialized);
+
+    const loaded = loadModelLibrary(fallback, storage);
+
+    expect(loaded.value.activeModelId).toBe(CASH_FLOW_MODEL_ID);
+    expect(loaded.value.entries[CASH_FLOW_MODEL_ID]?.workspace).toEqual(fallback);
+    expect(loaded.value.entries[LEGACY_TOKBERI_MODEL_ID]).toBeUndefined();
+    expect(storage.getItem(MODEL_LIBRARY_CASH_FLOW_BACKUP_KEY)).toBe(serialized);
+    expect(loaded.warning).toContain('денежного потока');
   });
 });

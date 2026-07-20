@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import fixture from './fixtures/tokberi-base-station.json';
 import { computeGraphFocus, computeImpact, computeTokBeriThresholds } from './analysis';
 import { createBlankModel } from './builder';
+import { CASH_FLOW_MODEL_ID, createCashFlowModel } from './cash-flow-template';
 import { evaluateModel, getCalculationRelations, inferFormulaNode } from './evaluator';
 import {
   assertUniqueMetricAlias,
@@ -12,10 +13,12 @@ import { validateModelDocument } from './schema';
 import {
   createWorkspaceDocument,
   BEHAVIOR_UPGRADE_BACKUP_KEY,
+  CASH_FLOW_RESET_BACKUP_KEY,
   importWorkspace,
   LEGACY_WORKSPACE_STORAGE_KEY,
   loadWorkspace,
   MIGRATION_BACKUP_KEY,
+  PREVIOUS_WORKSPACE_STORAGE_KEY,
   serializeWorkspace,
   WORKSPACE_STORAGE_KEY,
 } from './storage';
@@ -99,6 +102,23 @@ describe('TokBeri reference model', () => {
     const analysis = computeGraphFocus(model, [], 'rentals_per_day');
     expect(analysis.mode).toBe('analysis');
     expect(analysis.analysisEdges.has('cash_contribution-profit_before_tax')).toBe(true);
+  });
+});
+
+describe('minimal cash-flow starter model', () => {
+  it('calculates revenue, expenses, profit and break-even from the simple graph', () => {
+    const model = createCashFlowModel();
+    const result = evaluateModel(model);
+    const thresholds = computeTokBeriThresholds(model, 'base', {});
+
+    expect(result.errors).toEqual([]);
+    expect(result.metrics.total_revenue.value).toBeCloseTo(11_250);
+    expect(result.metrics.transactional_cost.value).toBeCloseTo(393.75);
+    expect(result.metrics.total_cost.value).toBeCloseTo(993.75);
+    expect(result.metrics.profit.value).toBeCloseTo(10_256.25);
+    expect(thresholds.breakEven.reached).toBe(true);
+    expect(thresholds.breakEven.inputId).toBe('total_rents');
+    expect(thresholds.breakEven.value).toBeCloseTo(2.487, 2);
   });
 });
 
@@ -348,5 +368,26 @@ describe('universal builder schema v2', () => {
     expect(loaded.value.model.metrics.total_capex.behavior).toBe('stock');
     expect(storage.getItem(BEHAVIOR_UPGRADE_BACKUP_KEY)).toBe(serialized);
     expect(loaded.warning).toContain('One-off');
+  });
+
+  it('backs up the previous starter workspace before opening the cash-flow model', () => {
+    const previous = JSON.stringify(createWorkspaceDocument(createTokBeriModel()));
+    const items = new Map<string, string>([[PREVIOUS_WORKSPACE_STORAGE_KEY, previous]]);
+    const storage = {
+      get length() { return items.size; },
+      clear: () => items.clear(),
+      getItem: (key: string) => items.get(key) ?? null,
+      key: (index: number) => [...items.keys()][index] ?? null,
+      removeItem: (key: string) => { items.delete(key); },
+      setItem: (key: string, value: string) => { items.set(key, value); },
+    } satisfies Storage;
+
+    const loaded = loadWorkspace(storage);
+
+    expect(loaded.value.model.id).toBe(CASH_FLOW_MODEL_ID);
+    expect(loaded.value.model.metrics).toHaveProperty('profit');
+    expect(loaded.value.model.metrics).not.toHaveProperty('payback_months');
+    expect(storage.getItem(CASH_FLOW_RESET_BACKUP_KEY)).toBe(previous);
+    expect(loaded.warning).toContain('минимальной моделью денежного потока');
   });
 });

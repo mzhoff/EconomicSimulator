@@ -290,10 +290,37 @@ function validateModelShape(value: unknown, path: string, issues: ValidationIssu
             rowIds.add(rawRow.id);
           }
           if (rawBreakdown.template === 'amount_list') {
-            requireString(rawRow, 'amountMetricId', rowPath, issues);
+            const amountReferences = [
+              rawRow.amountMetricId,
+              rawRow.amountSourceMetricId,
+            ].filter((metricId) => typeof metricId === 'string' && metricId.length > 0);
+            if (amountReferences.length !== 1) {
+              issues.push({
+                path: rowPath,
+                message: 'Укажите ровно один источник суммы: внутреннее значение или существующую метрику.',
+              });
+            }
           } else if (rawBreakdown.template === 'quantity_rate') {
-            requireString(rawRow, 'quantityMetricId', rowPath, issues);
-            requireString(rawRow, 'rateMetricId', rowPath, issues);
+            const quantityReferences = [
+              rawRow.quantityMetricId,
+              rawRow.quantitySourceMetricId,
+            ].filter((metricId) => typeof metricId === 'string' && metricId.length > 0);
+            const rateReferences = [
+              rawRow.rateMetricId,
+              rawRow.rateSourceMetricId,
+            ].filter((metricId) => typeof metricId === 'string' && metricId.length > 0);
+            if (quantityReferences.length !== 1) {
+              issues.push({
+                path: rowPath,
+                message: 'Укажите ровно один источник количества: внутреннее значение или существующую метрику.',
+              });
+            }
+            if (rateReferences.length !== 1) {
+              issues.push({
+                path: rowPath,
+                message: 'Укажите ровно один источник ставки: внутреннее значение или существующую метрику.',
+              });
+            }
           }
         });
       }
@@ -391,23 +418,40 @@ function validateModelSemantics(model: ModelState, issues: ValidationIssue[]): v
       issues.push({ path: `model.breakdowns.${breakdown.resultMetricId}`, message: 'Результирующая метрика состава не существует.' });
       continue;
     }
-    if (parent.behavior !== 'flow' || !unitsEqual(parent.unit, RUB)) {
-      issues.push({ path: `model.breakdowns.${breakdown.resultMetricId}`, message: 'Состав v1 поддерживает денежные Flow-метрики в рублях.' });
+    if (
+      breakdown.template === 'quantity_rate'
+      && (parent.behavior !== 'flow' || !unitsEqual(parent.unit, RUB))
+    ) {
+      issues.push({
+        path: `model.breakdowns.${breakdown.resultMetricId}`,
+        message: 'Шаблон «Количество × ставка» поддерживает денежные Flow-метрики в рублях.',
+      });
     }
-    const childMetricIds = breakdown.rows.flatMap((row) => [
+    const ownedMetricIds = breakdown.rows.flatMap((row) => [
       row.amountMetricId,
       row.quantityMetricId,
       row.rateMetricId,
     ].filter((metricId): metricId is string => Boolean(metricId)));
+    const dependencyMetricIds = breakdown.rows.flatMap((row) => [
+      row.amountSourceMetricId ?? row.amountMetricId,
+      row.quantitySourceMetricId ?? row.quantityMetricId,
+      row.rateSourceMetricId ?? row.rateMetricId,
+    ].filter((metricId): metricId is string => Boolean(metricId)));
     for (const row of breakdown.rows) {
       if (breakdown.template === 'amount_list') {
-        const amount = row.amountMetricId ? model.metrics[row.amountMetricId] : undefined;
-        if (amount && (amount.behavior !== 'flow' || !unitsEqual(amount.unit, RUB))) {
-          issues.push({ path: `model.breakdowns.${breakdown.resultMetricId}.rows.${row.id}`, message: 'Сумма позиции должна быть денежной Flow-метрикой.' });
+        const amountId = row.amountSourceMetricId ?? row.amountMetricId;
+        const amount = amountId ? model.metrics[amountId] : undefined;
+        if (amount && (amount.behavior !== parent.behavior || !unitsEqual(amount.unit, parent.unit))) {
+          issues.push({
+            path: `model.breakdowns.${breakdown.resultMetricId}.rows.${row.id}`,
+            message: 'Метрика позиции должна совпадать с итогом по поведению и единице измерения.',
+          });
         }
       } else {
-        const quantity = row.quantityMetricId ? model.metrics[row.quantityMetricId] : undefined;
-        const rate = row.rateMetricId ? model.metrics[row.rateMetricId] : undefined;
+        const quantityId = row.quantitySourceMetricId ?? row.quantityMetricId;
+        const rateId = row.rateSourceMetricId ?? row.rateMetricId;
+        const quantity = quantityId ? model.metrics[quantityId] : undefined;
+        const rate = rateId ? model.metrics[rateId] : undefined;
         if (quantity && (quantity.behavior !== 'stock' || !unitsEqual(quantity.unit, PERSON))) {
           issues.push({ path: `model.breakdowns.${breakdown.resultMetricId}.rows.${row.id}`, message: 'Количество позиции должно быть Stock-метрикой в людях.' });
         }
@@ -416,13 +460,15 @@ function validateModelSemantics(model: ModelState, issues: ValidationIssue[]): v
         }
       }
     }
-    for (const metricId of childMetricIds) {
+    for (const metricId of dependencyMetricIds) {
       if (metricId === parent.id) {
         issues.push({ path: `model.breakdowns.${breakdown.resultMetricId}.rows`, message: 'Результирующая метрика не может входить в собственный состав.' });
       }
       if (!model.metrics[metricId]) {
-        issues.push({ path: `model.breakdowns.${breakdown.resultMetricId}.rows`, message: `Внутренняя метрика «${metricId}» не существует.` });
+        issues.push({ path: `model.breakdowns.${breakdown.resultMetricId}.rows`, message: `Метрика-источник «${metricId}» не существует.` });
       }
+    }
+    for (const metricId of ownedMetricIds) {
       if (claimedBreakdownMetrics.has(metricId)) {
         issues.push({ path: `model.breakdowns.${breakdown.resultMetricId}.rows`, message: `Внутренняя метрика «${metricId}» уже принадлежит другому составу.` });
       }
@@ -431,9 +477,10 @@ function validateModelSemantics(model: ModelState, issues: ValidationIssue[]): v
     const formulaDependencies = parent.formula
       ? extractDependencies(parent.formula.ast)
       : new Set<string>();
+    const expectedDependencies = new Set(dependencyMetricIds);
     if (
-      formulaDependencies.size !== childMetricIds.length
-      || childMetricIds.some((metricId) => !formulaDependencies.has(metricId))
+      formulaDependencies.size !== expectedDependencies.size
+      || [...expectedDependencies].some((metricId) => !formulaDependencies.has(metricId))
     ) {
       issues.push({ path: `model.metrics.${parent.id}.formula`, message: 'Формула результата не соответствует строкам состава.' });
     }

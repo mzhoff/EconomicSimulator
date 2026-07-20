@@ -5,6 +5,7 @@ import { createBlankModel } from './builder';
 import {
   breakdownChildMetricIds,
   convertMetricBreakdownTemplate,
+  metricBreakdownInputFromFormula,
   removeMetricBreakdown,
   toggleMetricBreakdown,
   upsertMetricBreakdown,
@@ -196,6 +197,78 @@ describe('minimal cash-flow starter model', () => {
     };
     const recalculated = convertMetricBreakdownTemplate(editedAmount, 'quantity_rate');
     expect(recalculated.rows[0]).toMatchObject({ quantity: 2, rate: 120_000 });
+  });
+
+  it('reuses one quantity metric in several rows and keeps a real DAG dependency', () => {
+    const source = createCashFlowModel();
+    const developerCountId = source.breakdowns!.payroll_cost.rows[0].quantityMetricId!;
+    const withSharedDeveloperCount = upsertMetricBreakdown(source, 'work_tools_cost', {
+      template: 'quantity_rate',
+      rows: [
+        {
+          id: 'chatgpt',
+          name: 'ChatGPT',
+          comment: '',
+          quantity: 1,
+          quantitySourceMetricId: developerCountId,
+          rate: 9_000,
+        },
+        {
+          id: 'figma',
+          name: 'Figma',
+          comment: '',
+          quantity: 1,
+          quantitySourceMetricId: developerCountId,
+          rate: 3_000,
+        },
+      ],
+    });
+
+    const toolsBreakdown = withSharedDeveloperCount.breakdowns!.work_tools_cost;
+    expect(toolsBreakdown.rows.map((row) => row.quantitySourceMetricId)).toEqual([
+      developerCountId,
+      developerCountId,
+    ]);
+    expect(toolsBreakdown.rows.every((row) => !row.quantityMetricId)).toBe(true);
+    expect(breakdownChildMetricIds(toolsBreakdown)).toHaveLength(2);
+    expect(evaluateModel(
+      withSharedDeveloperCount,
+      'base',
+      { [developerCountId]: 2 },
+    ).metrics.work_tools_cost.value).toBeCloseTo(24_000);
+    expect(getCalculationRelations(withSharedDeveloperCount)).toContainEqual(expect.objectContaining({
+      from: developerCountId,
+      to: 'work_tools_cost',
+      operation: 'multiply',
+    }));
+    expect(validateModelDocument(withSharedDeveloperCount)).toMatchObject({ ok: true });
+
+    const withoutPayrollTable = removeMetricBreakdown(
+      withSharedDeveloperCount,
+      'payroll_cost',
+      200_000,
+    );
+    expect(withoutPayrollTable.metrics[developerCountId]).toBeDefined();
+    expect(validateModelDocument(withoutPayrollTable)).toMatchObject({ ok: true });
+  });
+
+  it('turns an existing sum formula into a compact table of metric references', () => {
+    const source = createCashFlowModel();
+    const suggested = metricBreakdownInputFromFormula(
+      source.metrics.total_cost,
+      source.metrics,
+    );
+
+    expect(suggested?.rows.map((row) => row.amountSourceMetricId)).toEqual([
+      'transactional_cost',
+      'infrastructure_cost',
+      'team_cost',
+    ]);
+
+    const withTotalCostTable = upsertMetricBreakdown(source, 'total_cost', suggested!);
+    expect(breakdownChildMetricIds(withTotalCostTable.breakdowns!.total_cost)).toEqual([]);
+    expect(evaluateModel(withTotalCostTable).metrics.total_cost.value).toBeCloseTo(200_993.75);
+    expect(validateModelDocument(withTotalCostTable)).toMatchObject({ ok: true });
   });
 });
 

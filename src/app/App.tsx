@@ -607,7 +607,7 @@ export default function App() {
       return;
     }
     if (!canHaveMetricBreakdown(model.metrics[id])) {
-      setNotice('Табличный состав сейчас доступен для конечных денежных Flow-метрик без собственной формулы.');
+      setNotice('Табличный состав можно создать для вводимой метрики или формулы, состоящей только из суммы метрик.');
       return;
     }
     setBreakdownEditorMetricId(id);

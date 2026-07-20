@@ -178,8 +178,11 @@ export interface MetricBreakdownRowDef {
   name: string;
   comment: string;
   amountMetricId?: string;
+  amountSourceMetricId?: string;
   quantityMetricId?: string;
+  quantitySourceMetricId?: string;
   rateMetricId?: string;
+  rateSourceMetricId?: string;
 }
 
 export interface MetricBreakdownDef {

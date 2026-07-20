@@ -1,6 +1,23 @@
-import { Calculator, Plus, TableProperties, Trash2, X } from 'lucide-react';
-import { useMemo, useState, type FormEvent } from 'react';
-import { convertMetricBreakdownTemplate } from './metric-engine';
+import {
+  Calculator,
+  Link2,
+  Plus,
+  Search,
+  TableProperties,
+  Trash2,
+  X,
+} from 'lucide-react';
+import {
+  Fragment,
+  useMemo,
+  useState,
+  type FormEvent,
+  type ReactNode,
+} from 'react';
+import {
+  convertMetricBreakdownTemplate,
+  metricBreakdownInputFromFormula,
+} from './metric-engine';
 import type {
   MetricBreakdownDef,
   MetricDef,
@@ -9,6 +26,12 @@ import type {
   MetricBreakdownInput,
   MetricBreakdownRowInput,
 } from './metric-engine';
+import {
+  PERSON,
+  RUB,
+  RUB_PER_PERSON_MONTH,
+  unitsEqual,
+} from '../../core/units';
 
 interface MetricBreakdownEditorProps {
   open: boolean;
@@ -25,7 +48,17 @@ const moneyFormatter = new Intl.NumberFormat('ru-RU', {
   currency: 'RUB',
   maximumFractionDigits: 2,
 });
+const numberFormatter = new Intl.NumberFormat('ru-RU', {
+  maximumFractionDigits: 2,
+});
 const MONEY_INPUT_STEP = 0.01;
+type ReferenceField = 'amount' | 'quantity' | 'rate';
+
+interface ActiveReferencePicker {
+  rowId: string;
+  field: ReferenceField;
+  query: string;
+}
 
 function nextRowId(): string {
   if (typeof globalThis.crypto?.randomUUID === 'function') {
@@ -38,13 +71,19 @@ function rowFromBreakdown(
   row: MetricBreakdownDef['rows'][number],
   metrics: Record<string, MetricDef>,
 ): MetricBreakdownRowInput {
+  const amountMetricId = row.amountSourceMetricId ?? row.amountMetricId;
+  const quantityMetricId = row.quantitySourceMetricId ?? row.quantityMetricId;
+  const rateMetricId = row.rateSourceMetricId ?? row.rateMetricId;
   return {
     id: row.id,
     name: row.name,
     comment: row.comment,
-    amount: row.amountMetricId ? metrics[row.amountMetricId]?.value ?? 0 : undefined,
-    quantity: row.quantityMetricId ? metrics[row.quantityMetricId]?.value ?? 0 : undefined,
-    rate: row.rateMetricId ? metrics[row.rateMetricId]?.value ?? 0 : undefined,
+    amount: amountMetricId ? metrics[amountMetricId]?.value ?? 0 : undefined,
+    amountSourceMetricId: row.amountSourceMetricId,
+    quantity: quantityMetricId ? metrics[quantityMetricId]?.value ?? 0 : undefined,
+    quantitySourceMetricId: row.quantitySourceMetricId,
+    rate: rateMetricId ? metrics[rateMetricId]?.value ?? 0 : undefined,
+    rateSourceMetricId: row.rateSourceMetricId,
   };
 }
 
@@ -60,6 +99,9 @@ function initialInput(
     };
   }
 
+  const formulaInput = metricBreakdownInputFromFormula(metric, metrics);
+  if (formulaInput) return formulaInput;
+
   return {
     template: 'amount_list',
     rows: [{
@@ -71,10 +113,47 @@ function initialInput(
   };
 }
 
-function rowTotal(row: MetricBreakdownRowInput, template: MetricBreakdownInput['template']): number {
+function referencedValue(
+  fallback: number | undefined,
+  sourceMetricId: string | undefined,
+  metrics: Record<string, MetricDef>,
+): number {
+  if (!sourceMetricId) return fallback ?? 0;
+  return metrics[sourceMetricId]?.value ?? 0;
+}
+
+function rowTotal(
+  row: MetricBreakdownRowInput,
+  template: MetricBreakdownInput['template'],
+  metrics: Record<string, MetricDef>,
+): number {
   return template === 'amount_list'
-    ? row.amount ?? 0
-    : (row.quantity ?? 0) * (row.rate ?? 0);
+    ? referencedValue(row.amount, row.amountSourceMetricId, metrics)
+    : referencedValue(row.quantity, row.quantitySourceMetricId, metrics)
+      * referencedValue(row.rate, row.rateSourceMetricId, metrics);
+}
+
+function formatMetricValue(value: number, metric: MetricDef): string {
+  if (metric.unit.symbol === '%') return `${numberFormatter.format(value * 100)}%`;
+  if (metric.unit.symbol === 'x') return `${numberFormatter.format(value)}×`;
+  return unitsEqual(metric.unit, RUB)
+    ? moneyFormatter.format(value)
+    : `${numberFormatter.format(value)}${metric.unit.symbol ? ` ${metric.unit.symbol}` : ''}`;
+}
+
+function matchesReferenceField(
+  candidate: MetricDef,
+  field: ReferenceField,
+  resultMetric: MetricDef,
+): boolean {
+  if (field === 'amount') {
+    return candidate.behavior === resultMetric.behavior
+      && unitsEqual(candidate.unit, resultMetric.unit);
+  }
+  if (field === 'quantity') {
+    return candidate.behavior === 'stock' && unitsEqual(candidate.unit, PERSON);
+  }
+  return candidate.behavior === 'rate' && unitsEqual(candidate.unit, RUB_PER_PERSON_MONTH);
 }
 
 function MetricBreakdownEditorContent({
@@ -86,18 +165,43 @@ function MetricBreakdownEditorContent({
   onClose,
 }: Omit<MetricBreakdownEditorProps, 'open'> & { metric: MetricDef }) {
   const [draft, setDraft] = useState(() => initialInput(metric, breakdown, metrics));
+  const [referencePicker, setReferencePicker] = useState<ActiveReferencePicker | null>(null);
+  const ownedMetricIds = useMemo(
+    () => new Set(
+      breakdown?.rows.flatMap((row) => [
+        row.amountMetricId,
+        row.quantityMetricId,
+        row.rateMetricId,
+      ].filter((metricId): metricId is string => Boolean(metricId))) ?? [],
+    ),
+    [breakdown],
+  );
+  const referenceCandidates = useMemo(
+    () => Object.values(metrics)
+      .filter((candidate) => candidate.id !== metric.id && !ownedMetricIds.has(candidate.id))
+      .sort((left, right) => left.name.localeCompare(right.name, 'ru')),
+    [metric.id, metrics, ownedMetricIds],
+  );
+  const supportsQuantityRate = metric.behavior === 'flow' && unitsEqual(metric.unit, RUB);
   const total = useMemo(
-    () => draft.rows.reduce((sum, row) => sum + rowTotal(row, draft.template), 0),
-    [draft],
+    () => draft.rows.reduce((sum, row) => sum + rowTotal(row, draft.template, metrics), 0),
+    [draft, metrics],
   );
   const invalid = draft.rows.length === 0 || draft.rows.some((row) => (
     !row.name.trim()
     || (draft.template === 'amount_list'
-      ? !Number.isFinite(row.amount) || (row.amount ?? 0) < 0
-      : !Number.isFinite(row.quantity)
-        || !Number.isFinite(row.rate)
-        || (row.quantity ?? 0) < 0
-        || (row.rate ?? 0) < 0)
+      ? row.amountSourceMetricId
+        ? !metrics[row.amountSourceMetricId]
+        : !Number.isFinite(row.amount) || (row.amount ?? 0) < 0
+      : (
+        row.quantitySourceMetricId
+          ? !metrics[row.quantitySourceMetricId]
+          : !Number.isFinite(row.quantity) || (row.quantity ?? 0) < 0
+      ) || (
+        row.rateSourceMetricId
+          ? !metrics[row.rateSourceMetricId]
+          : !Number.isFinite(row.rate) || (row.rate ?? 0) < 0
+      ))
   ));
 
   const updateRow = (id: string, patch: Partial<MetricBreakdownRowInput>) => {
@@ -108,7 +212,9 @@ function MetricBreakdownEditorContent({
   };
 
   const changeTemplate = (template: MetricBreakdownInput['template']) => {
+    if (template === 'quantity_rate' && !supportsQuantityRate) return;
     setDraft((current) => convertMetricBreakdownTemplate(current, template));
+    setReferencePicker(null);
   };
 
   const addRow = () => {
@@ -126,6 +232,32 @@ function MetricBreakdownEditorContent({
         },
       ],
     }));
+  };
+
+  const openReferencePicker = (rowId: string, field: ReferenceField) => {
+    setReferencePicker({ rowId, field, query: '' });
+  };
+
+  const selectReference = (rowId: string, field: ReferenceField, source: MetricDef) => {
+    const sourceValue = source.value ?? 0;
+    if (field === 'amount') {
+      updateRow(rowId, { amount: sourceValue, amountSourceMetricId: source.id });
+    } else if (field === 'quantity') {
+      updateRow(rowId, { quantity: sourceValue, quantitySourceMetricId: source.id });
+    } else {
+      updateRow(rowId, { rate: sourceValue, rateSourceMetricId: source.id });
+    }
+    setReferencePicker(null);
+  };
+
+  const clearReference = (rowId: string, field: ReferenceField) => {
+    if (field === 'amount') {
+      updateRow(rowId, { amountSourceMetricId: undefined });
+    } else if (field === 'quantity') {
+      updateRow(rowId, { quantitySourceMetricId: undefined });
+    } else {
+      updateRow(rowId, { rateSourceMetricId: undefined });
+    }
   };
 
   const handleSubmit = (event: FormEvent) => {
@@ -167,19 +299,21 @@ function MetricBreakdownEditorContent({
         <div className="min-h-0 flex-1 overflow-auto px-[1.25rem] py-[1rem]">
           <fieldset>
             <legend className="mb-[0.5rem] text-[0.6875rem] text-muted-foreground">Структура расчёта</legend>
-            <div className="grid max-w-[35rem] grid-cols-2 gap-[0.5rem]">
+            <div className={`grid max-w-[35rem] gap-[0.5rem] ${supportsQuantityRate ? 'grid-cols-2' : 'grid-cols-1'}`}>
               <TemplateButton
                 active={draft.template === 'amount_list'}
                 title="Список сумм"
-                description="Сервисы, подписки и другие готовые суммы"
+                description="Числа или ссылки на существующие метрики"
                 onClick={() => changeTemplate('amount_list')}
               />
-              <TemplateButton
-                active={draft.template === 'quantity_rate'}
-                title="Количество × ставка"
-                description="Роли, лицензии или ресурсы с ценой за единицу"
-                onClick={() => changeTemplate('quantity_rate')}
-              />
+              {supportsQuantityRate ? (
+                <TemplateButton
+                  active={draft.template === 'quantity_rate'}
+                  title="Количество × ставка"
+                  description="Каждый множитель можно связать с метрикой"
+                  onClick={() => changeTemplate('quantity_rate')}
+                />
+              ) : null}
             </div>
           </fieldset>
 
@@ -198,64 +332,116 @@ function MetricBreakdownEditorContent({
             </div>
 
             <div className="divide-y divide-border">
-              {draft.rows.map((row) => (
-                <div
-                  key={row.id}
-                  className={`grid items-center gap-[0.5rem] px-[0.75rem] py-[0.625rem] ${
-                    draft.template === 'amount_list'
-                      ? 'grid-cols-[minmax(12rem,1.2fr)_10rem_minmax(12rem,1fr)_2rem]'
-                      : 'grid-cols-[minmax(11rem,1.2fr)_7rem_10rem_10rem_minmax(10rem,1fr)_2rem]'
-                  }`}
-                >
-                  <input
-                    value={row.name}
-                    onChange={(event) => updateRow(row.id, { name: event.target.value })}
-                    aria-label="Название позиции"
-                    className="field-input"
-                  />
-                  {draft.template === 'quantity_rate' ? (
-                    <NumberCell
-                      label={`Количество для ${row.name}`}
-                      value={row.quantity ?? 0}
-                      step={1}
-                      onChange={(quantity) => updateRow(row.id, { quantity })}
-                    />
-                  ) : null}
-                  <NumberCell
-                    label={`${draft.template === 'amount_list' ? 'Сумма' : 'Ставка'} для ${row.name}`}
-                    value={draft.template === 'amount_list' ? row.amount ?? 0 : row.rate ?? 0}
-                    step={MONEY_INPUT_STEP}
-                    onChange={(value) => updateRow(
-                      row.id,
-                      draft.template === 'amount_list' ? { amount: value } : { rate: value },
-                    )}
-                  />
-                  {draft.template === 'quantity_rate' ? (
-                    <output className="block text-right text-[0.75rem] tabular-nums text-foreground" style={{ fontWeight: 600 }}>
-                      {moneyFormatter.format(rowTotal(row, draft.template))}
-                    </output>
-                  ) : null}
-                  <input
-                    value={row.comment}
-                    onChange={(event) => updateRow(row.id, { comment: event.target.value })}
-                    aria-label={`Комментарий для ${row.name}`}
-                    placeholder="Необязательно"
-                    className="field-input"
-                  />
-                  <button
-                    type="button"
-                    aria-label={`Удалить позицию ${row.name}`}
-                    title="Удалить позицию"
-                    onClick={() => setDraft((current) => ({
-                      ...current,
-                      rows: current.rows.filter((item) => item.id !== row.id),
-                    }))}
-                    className="flex size-[2rem] cursor-pointer items-center justify-center rounded-[var(--radius-md)] text-muted-foreground hover:bg-red-50 hover:text-red-600"
-                  >
-                    <Trash2 className="size-[0.75rem]" />
-                  </button>
-                </div>
-              ))}
+              {draft.rows.map((row) => {
+                const amountSource = row.amountSourceMetricId
+                  ? metrics[row.amountSourceMetricId]
+                  : undefined;
+                const quantitySource = row.quantitySourceMetricId
+                  ? metrics[row.quantitySourceMetricId]
+                  : undefined;
+                const rateSource = row.rateSourceMetricId
+                  ? metrics[row.rateSourceMetricId]
+                  : undefined;
+                return (
+                  <Fragment key={row.id}>
+                    <div
+                      className={`grid items-center gap-[0.5rem] px-[0.75rem] py-[0.625rem] ${
+                        draft.template === 'amount_list'
+                          ? 'grid-cols-[minmax(12rem,1.2fr)_12rem_minmax(12rem,1fr)_2rem]'
+                          : 'grid-cols-[minmax(11rem,1.2fr)_8rem_11rem_9rem_minmax(10rem,1fr)_2rem]'
+                      }`}
+                    >
+                      <input
+                        value={row.name}
+                        onChange={(event) => updateRow(row.id, { name: event.target.value })}
+                        aria-label="Название позиции"
+                        className="field-input"
+                      />
+                      {draft.template === 'quantity_rate' ? (
+                        <MetricValueCell
+                          label={`Количество для ${row.name}`}
+                          sourceMetric={quantitySource}
+                          onOpenPicker={() => openReferencePicker(row.id, 'quantity')}
+                          onClearReference={() => clearReference(row.id, 'quantity')}
+                        >
+                          <NumberCell
+                            label={`Количество для ${row.name}`}
+                            value={row.quantity ?? 0}
+                            step={1}
+                            onChange={(quantity) => updateRow(row.id, { quantity })}
+                          />
+                        </MetricValueCell>
+                      ) : null}
+                      <MetricValueCell
+                        label={`${draft.template === 'amount_list' ? 'Сумма' : 'Ставка'} для ${row.name}`}
+                        sourceMetric={draft.template === 'amount_list' ? amountSource : rateSource}
+                        onOpenPicker={() => openReferencePicker(
+                          row.id,
+                          draft.template === 'amount_list' ? 'amount' : 'rate',
+                        )}
+                        onClearReference={() => clearReference(
+                          row.id,
+                          draft.template === 'amount_list' ? 'amount' : 'rate',
+                        )}
+                      >
+                        <NumberCell
+                          label={`${draft.template === 'amount_list' ? 'Сумма' : 'Ставка'} для ${row.name}`}
+                          value={draft.template === 'amount_list' ? row.amount ?? 0 : row.rate ?? 0}
+                          step={draft.template === 'amount_list'
+                            ? metric.inputConfig?.step ?? MONEY_INPUT_STEP
+                            : MONEY_INPUT_STEP}
+                          onChange={(value) => updateRow(
+                            row.id,
+                            draft.template === 'amount_list' ? { amount: value } : { rate: value },
+                          )}
+                        />
+                      </MetricValueCell>
+                      {draft.template === 'quantity_rate' ? (
+                        <output className="block text-right text-[0.75rem] tabular-nums text-foreground" style={{ fontWeight: 600 }}>
+                          {formatMetricValue(rowTotal(row, draft.template, metrics), metric)}
+                        </output>
+                      ) : null}
+                      <input
+                        value={row.comment}
+                        onChange={(event) => updateRow(row.id, { comment: event.target.value })}
+                        aria-label={`Комментарий для ${row.name}`}
+                        placeholder="Необязательно"
+                        className="field-input"
+                      />
+                      <button
+                        type="button"
+                        aria-label={`Удалить позицию ${row.name}`}
+                        title="Удалить позицию"
+                        onClick={() => setDraft((current) => ({
+                          ...current,
+                          rows: current.rows.filter((item) => item.id !== row.id),
+                        }))}
+                        className="flex size-[2rem] cursor-pointer items-center justify-center rounded-[var(--radius-md)] text-muted-foreground hover:bg-red-50 hover:text-red-600"
+                      >
+                        <Trash2 className="size-[0.75rem]" />
+                      </button>
+                    </div>
+                    {referencePicker?.rowId === row.id ? (
+                      <MetricReferencePicker
+                        field={referencePicker.field}
+                        query={referencePicker.query}
+                        candidates={referenceCandidates.filter((candidate) => (
+                          matchesReferenceField(candidate, referencePicker.field, metric)
+                        ))}
+                        onQueryChange={(query) => setReferencePicker((current) => (
+                          current ? { ...current, query } : current
+                        ))}
+                        onSelect={(source) => selectReference(
+                          row.id,
+                          referencePicker.field,
+                          source,
+                        )}
+                        onClose={() => setReferencePicker(null)}
+                      />
+                    ) : null}
+                  </Fragment>
+                );
+              })}
             </div>
 
             {draft.rows.length === 0 ? (
@@ -276,7 +462,7 @@ function MetricBreakdownEditorContent({
               <div className="flex items-center gap-[0.75rem]">
                 <span className="text-[0.6875rem] text-muted-foreground">Итого по {draft.rows.length} поз.</span>
                 <output className="text-[1rem] tabular-nums text-foreground" style={{ fontWeight: 700 }}>
-                  {moneyFormatter.format(total)}
+                  {formatMetricValue(total, metric)}
                 </output>
               </div>
             </div>
@@ -369,6 +555,155 @@ function TemplateButton({
       <span className="block text-[0.75rem] text-foreground" style={{ fontWeight: 650 }}>{title}</span>
       <span className="mt-[0.125rem] block text-[0.5625rem] text-muted-foreground">{description}</span>
     </button>
+  );
+}
+
+function MetricValueCell({
+  label,
+  sourceMetric,
+  children,
+  onOpenPicker,
+  onClearReference,
+}: {
+  label: string;
+  sourceMetric?: MetricDef;
+  children: ReactNode;
+  onOpenPicker: () => void;
+  onClearReference: () => void;
+}) {
+  if (sourceMetric) {
+    return (
+      <div className="flex min-w-0 items-center gap-[0.25rem]">
+        <button
+          type="button"
+          aria-label={`Изменить источник: ${label}`}
+          title={`${sourceMetric.name} · @${sourceMetric.alias}`}
+          onClick={onOpenPicker}
+          className="flex h-[2rem] min-w-0 flex-1 cursor-pointer items-center gap-[0.3125rem] rounded-[var(--radius-md)] border border-violet-200 bg-violet-50 px-[0.5rem] text-left text-[0.6875rem] text-violet-800 hover:border-violet-400"
+        >
+          <Link2 className="size-[0.6875rem] shrink-0" />
+          <span className="truncate">@{sourceMetric.alias}</span>
+        </button>
+        <button
+          type="button"
+          aria-label={`Вернуть ручной ввод: ${label}`}
+          title="Вернуть ручной ввод"
+          onClick={onClearReference}
+          className="flex size-[1.75rem] shrink-0 cursor-pointer items-center justify-center rounded-[var(--radius-md)] text-muted-foreground hover:bg-red-50 hover:text-red-600"
+        >
+          <X className="size-[0.6875rem]" />
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex min-w-0 items-center gap-[0.25rem]">
+      <div className="min-w-0 flex-1">{children}</div>
+      <button
+        type="button"
+        aria-label={`Связать с метрикой: ${label}`}
+        title="Использовать значение существующей метрики"
+        onClick={onOpenPicker}
+        className="flex size-[1.75rem] shrink-0 cursor-pointer items-center justify-center rounded-[var(--radius-md)] border border-border text-muted-foreground hover:border-violet-300 hover:bg-violet-50 hover:text-violet-700"
+      >
+        <Link2 className="size-[0.6875rem]" />
+      </button>
+    </div>
+  );
+}
+
+function referenceFieldLabel(field: ReferenceField): string {
+  if (field === 'quantity') return 'Количество';
+  if (field === 'rate') return 'Ставка';
+  return 'Сумма';
+}
+
+function MetricReferencePicker({
+  field,
+  query,
+  candidates,
+  onQueryChange,
+  onSelect,
+  onClose,
+}: {
+  field: ReferenceField;
+  query: string;
+  candidates: MetricDef[];
+  onQueryChange: (query: string) => void;
+  onSelect: (metric: MetricDef) => void;
+  onClose: () => void;
+}) {
+  const normalizedQuery = query.trim().toLocaleLowerCase('ru');
+  const filteredCandidates = normalizedQuery
+    ? candidates.filter((candidate) => (
+      candidate.name.toLocaleLowerCase('ru').includes(normalizedQuery)
+      || candidate.alias.toLocaleLowerCase('en-US').includes(normalizedQuery)
+    ))
+    : candidates;
+
+  return (
+    <div className="bg-violet-50/55 px-[0.75rem] py-[0.75rem]">
+      <div className="flex items-center justify-between gap-[1rem]">
+        <div>
+          <div className="flex items-center gap-[0.375rem] text-[0.75rem] text-foreground" style={{ fontWeight: 650 }}>
+            <Link2 className="size-[0.75rem] text-violet-600" />
+            Источник поля «{referenceFieldLabel(field)}»
+          </div>
+          <p className="mt-[0.125rem] text-[0.625rem] text-muted-foreground">
+            Выберите метрику — таблица сохранит ссылку на неё, а не копию значения.
+          </p>
+        </div>
+        <button
+          type="button"
+          aria-label="Закрыть выбор метрики"
+          onClick={onClose}
+          className="flex size-[1.75rem] cursor-pointer items-center justify-center rounded-[var(--radius-md)] text-muted-foreground hover:bg-card hover:text-foreground"
+        >
+          <X className="size-[0.75rem]" />
+        </button>
+      </div>
+
+      <label className="relative mt-[0.625rem] block">
+        <Search className="pointer-events-none absolute left-[0.625rem] top-1/2 size-[0.75rem] -translate-y-1/2 text-muted-foreground" />
+        <input
+          autoFocus
+          value={query}
+          onChange={(event) => onQueryChange(event.target.value)}
+          aria-label="Поиск метрики по названию или alias"
+          placeholder="Название или alias, например «разработчики»"
+          className="field-input pl-[1.875rem]"
+        />
+      </label>
+
+      <div className="mt-[0.5rem] max-h-[10rem] overflow-auto rounded-[var(--radius-md)] border border-violet-100 bg-card">
+        {filteredCandidates.map((candidate) => (
+          <button
+            key={candidate.id}
+            type="button"
+            onClick={() => onSelect(candidate)}
+            className="grid w-full cursor-pointer grid-cols-[minmax(0,1fr)_auto] items-center gap-[1rem] border-b border-border px-[0.625rem] py-[0.5rem] text-left last:border-b-0 hover:bg-violet-50"
+          >
+            <span className="min-w-0">
+              <span className="block truncate text-[0.75rem] text-foreground" style={{ fontWeight: 600 }}>
+                {candidate.name}
+              </span>
+              <span className="block truncate text-[0.625rem] text-muted-foreground">
+                @{candidate.alias} · {candidate.behavior} · {candidate.unit.symbol}
+              </span>
+            </span>
+            <span className="text-[0.6875rem] tabular-nums text-foreground" style={{ fontWeight: 600 }}>
+              {formatMetricValue(candidate.value ?? 0, candidate)}
+            </span>
+          </button>
+        ))}
+        {filteredCandidates.length === 0 ? (
+          <div className="px-[0.75rem] py-[1.25rem] text-center text-[0.6875rem] text-muted-foreground">
+            Совместимых метрик не найдено. Создайте её на Canvas и вернитесь к таблице.
+          </div>
+        ) : null}
+      </div>
+    </div>
   );
 }
 

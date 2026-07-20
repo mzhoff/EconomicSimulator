@@ -1,10 +1,11 @@
-import { literal, multiply, ref, sum } from './ast';
+import { extractDependencies, literal, multiply, ref, sum } from './ast';
 import { formatFormulaAst } from './formula-parser';
 import type {
   MetricBreakdownDef,
   MetricBreakdownRowDef,
   MetricBreakdownTemplate,
   MetricDef,
+  FormulaNode,
   ModelState,
   WorkspaceDocument,
 } from './model';
@@ -21,8 +22,11 @@ export interface MetricBreakdownRowInput {
   name: string;
   comment: string;
   amount?: number;
+  amountSourceMetricId?: string;
   quantity?: number;
+  quantitySourceMetricId?: string;
   rate?: number;
+  rateSourceMetricId?: string;
 }
 
 export interface MetricBreakdownInput {
@@ -73,6 +77,33 @@ function breakdownRowTotal(
   return template === 'amount_list'
     ? finiteOr(row.amount, 0)
     : finiteOr(row.quantity, 0) * finiteOr(row.rate, 0);
+}
+
+function additiveMetricReferences(node: FormulaNode): string[] | null {
+  if (node.type === 'metric') return [node.metricId];
+  if (node.type !== 'binary' || node.operator !== 'add') return null;
+  const left = additiveMetricReferences(node.left);
+  const right = additiveMetricReferences(node.right);
+  return left && right ? [...left, ...right] : null;
+}
+
+export function metricBreakdownInputFromFormula(
+  metric: MetricDef,
+  metrics: Record<string, MetricDef>,
+): MetricBreakdownInput | null {
+  if (!metric.formula) return null;
+  const metricIds = additiveMetricReferences(metric.formula.ast);
+  if (!metricIds?.length || metricIds.some((metricId) => !metrics[metricId])) return null;
+  return {
+    template: 'amount_list',
+    rows: metricIds.map((metricId, index) => ({
+      id: `formula-${metricId}-${index + 1}`,
+      name: metrics[metricId].name,
+      comment: '',
+      amount: metrics[metricId].value ?? 0,
+      amountSourceMetricId: metricId,
+    })),
+  };
 }
 
 export function convertMetricBreakdownTemplate(
@@ -198,16 +229,33 @@ export function allBreakdownChildMetricIds(model: ModelState): Set<string> {
 export function canHaveMetricBreakdown(metric: MetricDef | undefined): boolean {
   return Boolean(
     metric
-    && metric.behavior === 'flow'
-    && unitsEqual(metric.unit, RUB)
-    && (!metric.formula || metric.provenance.version === 'breakdown-v1'),
+    && (
+      !metric.formula
+      || metric.provenance.version === 'breakdown-v1'
+      || additiveMetricReferences(metric.formula.ast)
+    ),
   );
 }
 
-function removeOwnedMetrics(model: ModelState, metricIds: Set<string>): ModelState {
+function removeOwnedMetrics(
+  model: ModelState,
+  metricIds: Set<string>,
+  ownerMetricId: string,
+): ModelState {
   if (metricIds.size === 0) return model;
+  const externallyReferenced = new Set<string>();
+  for (const metric of Object.values(model.metrics)) {
+    if (metric.id === ownerMetricId || !metric.formula) continue;
+    for (const dependencyId of extractDependencies(metric.formula.ast)) {
+      if (metricIds.has(dependencyId)) externallyReferenced.add(dependencyId);
+    }
+  }
+  const removableMetricIds = new Set(
+    [...metricIds].filter((metricId) => !externallyReferenced.has(metricId)),
+  );
+  if (removableMetricIds.size === 0) return model;
   const metrics = Object.fromEntries(
-    Object.entries(model.metrics).filter(([id]) => !metricIds.has(id)),
+    Object.entries(model.metrics).filter(([id]) => !removableMetricIds.has(id)),
   );
   const scenarios = Object.fromEntries(
     Object.entries(model.scenarios).map(([id, scenario]) => [
@@ -215,7 +263,7 @@ function removeOwnedMetrics(model: ModelState, metricIds: Set<string>): ModelSta
       {
         ...scenario,
         overrides: Object.fromEntries(
-          Object.entries(scenario.overrides).filter(([metricId]) => !metricIds.has(metricId)),
+          Object.entries(scenario.overrides).filter(([metricId]) => !removableMetricIds.has(metricId)),
         ),
       },
     ]),
@@ -224,7 +272,7 @@ function removeOwnedMetrics(model: ModelState, metricIds: Set<string>): ModelSta
     Object.entries(model.visualGroups)
       .map(([id, group]) => [
         id,
-        { ...group, metricIds: group.metricIds.filter((metricId) => !metricIds.has(metricId)) },
+        { ...group, metricIds: group.metricIds.filter((metricId) => !removableMetricIds.has(metricId)) },
       ])
       .filter(([, group]) => (group as ModelState['visualGroups'][string]).metricIds.length > 0),
   );
@@ -235,7 +283,7 @@ function removeOwnedMetrics(model: ModelState, metricIds: Set<string>): ModelSta
     scenarios,
     visualGroups,
     influenceRelations: model.influenceRelations.filter(
-      (relation) => !metricIds.has(relation.from) && !metricIds.has(relation.to),
+      (relation) => !removableMetricIds.has(relation.from) && !removableMetricIds.has(relation.to),
     ),
   };
 }
@@ -247,22 +295,35 @@ export function upsertMetricBreakdown(
 ): ModelState {
   const parent = sourceModel.metrics[resultMetricId];
   if (!parent) throw new Error('Результирующая метрика не найдена.');
-  if (parent.behavior !== 'flow' || !unitsEqual(parent.unit, RUB)) {
-    throw new Error('Первая версия состава поддерживает денежные Flow-метрики в рублях.');
+  if (
+    input.template === 'quantity_rate'
+    && (parent.behavior !== 'flow' || !unitsEqual(parent.unit, RUB))
+  ) {
+    throw new Error('Шаблон «Количество × ставка» поддерживает денежные Flow-метрики в рублях.');
   }
-  if (parent.formula && !sourceModel.breakdowns?.[resultMetricId]) {
-    throw new Error('Сначала выберите конечную денежную категорию без собственной формулы.');
+  if (
+    parent.formula
+    && !sourceModel.breakdowns?.[resultMetricId]
+    && !additiveMetricReferences(parent.formula.ast)
+  ) {
+    throw new Error('Таблица может заменить только формулу, состоящую из суммы метрик.');
   }
   if (input.rows.length === 0) throw new Error('Добавьте хотя бы одну позицию.');
 
   const oldBreakdown = sourceModel.breakdowns?.[resultMetricId];
   const oldRows = new Map(oldBreakdown?.rows.map((row) => [row.id, row]) ?? []);
   const oldMetricIds = new Set(oldBreakdown ? breakdownChildMetricIds(oldBreakdown) : []);
-  let model = removeOwnedMetrics(sourceModel, oldMetricIds);
+  let model = removeOwnedMetrics(sourceModel, oldMetricIds, resultMetricId);
   const metrics = { ...model.metrics };
   const rows: MetricBreakdownRowDef[] = [];
   const terms = [];
-  const childCount = input.template === 'amount_list' ? input.rows.length : input.rows.length * 2;
+  const childCount = input.rows.reduce((count, row) => (
+    count + (
+      input.template === 'amount_list'
+        ? Number(!row.amountSourceMetricId)
+        : Number(!row.quantitySourceMetricId) + Number(!row.rateSourceMetricId)
+    )
+  ), 0);
   const spacing = 304;
   const startX = parent.position.x + 136 - ((childCount - 1) * spacing) / 2;
   let childIndex = 0;
@@ -278,65 +339,110 @@ export function upsertMetricBreakdown(
     };
 
     if (input.template === 'amount_list') {
-      const id = previous?.amountMetricId ?? `breakdown-${resultMetricId}-${rowInput.id}-amount`;
-      const existing = sourceModel.metrics[id];
-      const alias = existing?.alias ?? uniqueAlias(`${aliasBase}_amount`, metrics, id);
-      metrics[id] = childMetric(parent, {
-        id,
-        definitionSuffix: `${rowInput.id}.amount`,
-        name: row.name,
-        alias,
-        value: Math.max(0, finiteOr(rowInput.amount, 0)),
-        behavior: 'flow',
-        unit: RUB,
-        position: existing?.position ?? {
-          x: startX + childIndex * spacing - 136,
-          y: parent.position.y + 260,
-        },
-      });
-      childIndex += 1;
-      row.amountMetricId = id;
-      terms.push(ref(id));
+      const sourceId = rowInput.amountSourceMetricId;
+      if (sourceId) {
+        const source = sourceModel.metrics[sourceId];
+        if (!source) throw new Error(`Метрика-источник «${sourceId}» не найдена.`);
+        if (sourceId === resultMetricId) throw new Error('Метрика не может ссылаться сама на себя.');
+        if (oldMetricIds.has(sourceId)) {
+          throw new Error('В качестве источника выберите самостоятельную метрику или метрику из другого состава.');
+        }
+        if (source.behavior !== parent.behavior || !unitsEqual(source.unit, parent.unit)) {
+          throw new Error(`Метрика «${source.name}» несовместима с итогом «${parent.name}».`);
+        }
+        row.amountSourceMetricId = sourceId;
+        terms.push(ref(sourceId));
+      } else {
+        const id = previous?.amountMetricId ?? `breakdown-${resultMetricId}-${rowInput.id}-amount`;
+        const existing = sourceModel.metrics[id];
+        const alias = existing?.alias ?? uniqueAlias(`${aliasBase}_amount`, metrics, id);
+        metrics[id] = childMetric(parent, {
+          id,
+          definitionSuffix: `${rowInput.id}.amount`,
+          name: row.name,
+          alias,
+          value: Math.max(0, finiteOr(rowInput.amount, 0)),
+          behavior: parent.behavior,
+          unit: parent.unit,
+          position: existing?.position ?? {
+            x: startX + childIndex * spacing - 136,
+            y: parent.position.y + 260,
+          },
+          integer: parent.inputConfig?.integer,
+        });
+        childIndex += 1;
+        row.amountMetricId = id;
+        terms.push(ref(id));
+      }
     } else {
-      const quantityId = previous?.quantityMetricId
-        ?? `breakdown-${resultMetricId}-${rowInput.id}-quantity`;
-      const rateId = previous?.rateMetricId
-        ?? `breakdown-${resultMetricId}-${rowInput.id}-rate`;
-      const existingQuantity = sourceModel.metrics[quantityId];
-      const existingRate = sourceModel.metrics[rateId];
-      metrics[quantityId] = childMetric(parent, {
-        id: quantityId,
-        definitionSuffix: `${rowInput.id}.quantity`,
-        name: `${row.name}: количество`,
-        alias: existingQuantity?.alias
-          ?? uniqueAlias(`${aliasBase}_quantity`, metrics, quantityId),
-        value: Math.max(0, finiteOr(rowInput.quantity, 1)),
-        behavior: 'stock',
-        unit: PERSON,
-        position: existingQuantity?.position ?? {
-          x: startX + childIndex * spacing - 136,
-          y: parent.position.y + 260,
-        },
-        integer: true,
-      });
-      childIndex += 1;
-      metrics[rateId] = childMetric(parent, {
-        id: rateId,
-        definitionSuffix: `${rowInput.id}.rate`,
-        name: `${row.name}: ставка`,
-        alias: existingRate?.alias
-          ?? uniqueAlias(`${aliasBase}_monthly_rate`, metrics, rateId),
-        value: Math.max(0, finiteOr(rowInput.rate, 0)),
-        behavior: 'rate',
-        unit: RUB_PER_PERSON_MONTH,
-        position: existingRate?.position ?? {
-          x: startX + childIndex * spacing - 112,
-          y: parent.position.y + 284,
-        },
-      });
-      childIndex += 1;
-      row.quantityMetricId = quantityId;
-      row.rateMetricId = rateId;
+      let quantityId = rowInput.quantitySourceMetricId;
+      if (quantityId) {
+        const quantity = sourceModel.metrics[quantityId];
+        if (!quantity) throw new Error(`Метрика количества «${quantityId}» не найдена.`);
+        if (quantityId === resultMetricId) throw new Error('Метрика не может ссылаться сама на себя.');
+        if (oldMetricIds.has(quantityId)) {
+          throw new Error('В качестве количества выберите самостоятельную метрику или метрику из другого состава.');
+        }
+        if (quantity.behavior !== 'stock' || !unitsEqual(quantity.unit, PERSON)) {
+          throw new Error(`Метрика «${quantity.name}» должна быть Stock-метрикой в людях.`);
+        }
+        row.quantitySourceMetricId = quantityId;
+      } else {
+        quantityId = previous?.quantityMetricId
+          ?? `breakdown-${resultMetricId}-${rowInput.id}-quantity`;
+        const existingQuantity = sourceModel.metrics[quantityId];
+        metrics[quantityId] = childMetric(parent, {
+          id: quantityId,
+          definitionSuffix: `${rowInput.id}.quantity`,
+          name: `${row.name}: количество`,
+          alias: existingQuantity?.alias
+            ?? uniqueAlias(`${aliasBase}_quantity`, metrics, quantityId),
+          value: Math.max(0, finiteOr(rowInput.quantity, 1)),
+          behavior: 'stock',
+          unit: PERSON,
+          position: existingQuantity?.position ?? {
+            x: startX + childIndex * spacing - 136,
+            y: parent.position.y + 260,
+          },
+          integer: true,
+        });
+        childIndex += 1;
+        row.quantityMetricId = quantityId;
+      }
+
+      let rateId = rowInput.rateSourceMetricId;
+      if (rateId) {
+        const rate = sourceModel.metrics[rateId];
+        if (!rate) throw new Error(`Метрика ставки «${rateId}» не найдена.`);
+        if (rateId === resultMetricId) throw new Error('Метрика не может ссылаться сама на себя.');
+        if (oldMetricIds.has(rateId)) {
+          throw new Error('В качестве ставки выберите самостоятельную метрику или метрику из другого состава.');
+        }
+        if (rate.behavior !== 'rate' || !unitsEqual(rate.unit, RUB_PER_PERSON_MONTH)) {
+          throw new Error(`Метрика «${rate.name}» должна быть Rate-метрикой в рублях на человека в месяц.`);
+        }
+        row.rateSourceMetricId = rateId;
+      } else {
+        rateId = previous?.rateMetricId
+          ?? `breakdown-${resultMetricId}-${rowInput.id}-rate`;
+        const existingRate = sourceModel.metrics[rateId];
+        metrics[rateId] = childMetric(parent, {
+          id: rateId,
+          definitionSuffix: `${rowInput.id}.rate`,
+          name: `${row.name}: ставка`,
+          alias: existingRate?.alias
+            ?? uniqueAlias(`${aliasBase}_monthly_rate`, metrics, rateId),
+          value: Math.max(0, finiteOr(rowInput.rate, 0)),
+          behavior: 'rate',
+          unit: RUB_PER_PERSON_MONTH,
+          position: existingRate?.position ?? {
+            x: startX + childIndex * spacing - 112,
+            y: parent.position.y + 284,
+          },
+        });
+        childIndex += 1;
+        row.rateMetricId = rateId;
+      }
       terms.push(multiply(multiply(ref(rateId), literal(1, MONTH)), ref(quantityId)));
     }
     rows.push(row);
@@ -417,7 +523,11 @@ export function removeMetricBreakdown(
   const breakdown = sourceModel.breakdowns?.[resultMetricId];
   const parent = sourceModel.metrics[resultMetricId];
   if (!breakdown || !parent) return sourceModel;
-  let model = removeOwnedMetrics(sourceModel, new Set(breakdownChildMetricIds(breakdown)));
+  let model = removeOwnedMetrics(
+    sourceModel,
+    new Set(breakdownChildMetricIds(breakdown)),
+    resultMetricId,
+  );
   const breakdowns = { ...(model.breakdowns ?? {}) };
   delete breakdowns[resultMetricId];
   const value = Number.isFinite(resultValue) ? resultValue : 0;

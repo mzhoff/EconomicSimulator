@@ -612,6 +612,7 @@ function NumberInput({ value, onChange }: { value: number; onChange: (value: num
   return (
     <input
       type="number"
+      step="any"
       value={Number.isFinite(value) ? value : 0}
       onChange={(event) => {
         const next = event.currentTarget.valueAsNumber;

@@ -28,8 +28,12 @@ import {
   computeTokBeriThresholds,
   formatFormulaAst,
   getCalculationRelations,
+  hideMetricOnCanvas,
   parseFormula,
   removeMetricBreakdown,
+  showAllMetricsOnCanvas,
+  structuralDescendantMetricIds,
+  synchronizeMetricBreakdownFormulas,
   toggleMetricBreakdown,
   unitFromPreset,
   unitPresetFromUnit,
@@ -98,20 +102,25 @@ import {
 } from './components/visual-group-dialog';
 import { CanvasContextMenu } from './components/canvas-context-menu';
 import { MetricBreakdownEditor } from './components/metric-breakdown-editor';
+import {
+  commitInputOverridesHistory,
+  commitModelHistory,
+  createModelHistory,
+  finalizeTransientHistory,
+  redoModelHistory,
+  undoModelHistory,
+  updateInputOverridesWithoutHistory,
+  updateModelPresentationWithoutHistory,
+  type InputOverridesByScenario,
+  type ModelHistorySnapshot,
+} from './model-history';
 
 const MIN_CONTENT_WIDTH = 1200;
 const MIN_CONTENT_HEIGHT = 800;
-const HISTORY_LIMIT = 50;
 const CANVAS_MENU_WIDTH = 208;
-const CANVAS_MENU_HEIGHT = 44;
+const CANVAS_MENU_HEIGHT = 84;
 const CANVAS_MENU_EDGE_GAP = 8;
 const EDGE_LINE_STYLE_STORAGE_KEY = 'economic-simulator:edge-line-style:v1';
-
-interface HistoryState {
-  past: ModelState[];
-  present: ModelState;
-  future: ModelState[];
-}
 
 interface SelectionRect {
   start: CanvasPoint;
@@ -122,7 +131,7 @@ interface DragState {
   startX: number;
   startY: number;
   originalPositions: Record<string, { x: number; y: number }>;
-  startModel: ModelState;
+  startSnapshot: ModelHistorySnapshot;
   moved: boolean;
 }
 
@@ -161,10 +170,6 @@ interface ConnectionDraft {
 interface VisualGroupEditorState {
   mode: 'create' | 'edit';
   groupId?: string;
-}
-
-function pushPast(past: ModelState[], model: ModelState): ModelState[] {
-  return [...past, model].slice(-HISTORY_LIMIT);
 }
 
 function createId(prefix: string): string {
@@ -250,23 +255,6 @@ function currentWorkspace(
   });
 }
 
-function sanitizeInputOverrides(
-  model: ModelState,
-  overridesByScenario: Record<string, Record<string, number>>,
-): Record<string, Record<string, number>> {
-  return Object.fromEntries(
-    Object.entries(overridesByScenario).map(([scenarioKey, overrides]) => [
-      scenarioKey,
-      Object.fromEntries(
-        Object.entries(overrides).filter(([metricId]) => {
-          const metric = model.metrics[metricId];
-          return Boolean(metric && !metric.formula);
-        }),
-      ),
-    ]),
-  );
-}
-
 export default function App() {
   const [initial] = useState(() => {
     const workspaceResult = loadWorkspace();
@@ -280,16 +268,13 @@ export default function App() {
     };
   });
   const [library, setLibrary] = useState<ModelLibraryState>(initial.library);
-  const [history, setHistory] = useState<HistoryState>({
-    past: [],
-    present: initial.workspace.model,
-    future: [],
-  });
-  const model = history.present;
-  const [scenarioId, setScenarioId] = useState(initial.workspace.activeScenarioId);
-  const [inputOverridesByScenario, setInputOverridesByScenario] = useState(
+  const [history, setHistory] = useState(() => createModelHistory(
+    initial.workspace.model,
     initial.workspace.inputOverridesByScenario,
-  );
+  ));
+  const model = history.present.model;
+  const inputOverridesByScenario = history.present.inputOverridesByScenario;
+  const [scenarioId, setScenarioId] = useState(initial.workspace.activeScenarioId);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
   const [impactActive, setImpactActive] = useState(false);
@@ -329,6 +314,7 @@ export default function App() {
   const canvasAreaRef = useRef<HTMLDivElement>(null);
   const importInputRef = useRef<HTMLInputElement>(null);
   const dragRef = useRef<DragState | null>(null);
+  const inputChangeRef = useRef<{ id: string; startSnapshot: ModelHistorySnapshot } | null>(null);
   const libraryRef = useRef(initial.library);
   const selectionRef = useRef<{ start: CanvasPoint; base: Set<string>; moved: boolean } | null>(null);
   const didInitialFitRef = useRef(false);
@@ -368,13 +354,18 @@ export default function App() {
     [currentOverrides, model, scenarioId],
   );
   const calculationRelations = useMemo(() => getCalculationRelations(model), [model]);
+  const manuallyHiddenMetricIds = useMemo(
+    () => new Set(model.hiddenMetricIds ?? []),
+    [model.hiddenMetricIds],
+  );
   const hiddenMetricIds = useMemo(() => {
-    const hidden = collapsedBreakdownMetricIds(model);
+    const hidden = collapsedBreakdownMetricIds(model, manuallyHiddenMetricIds);
+    manuallyHiddenMetricIds.forEach((id) => hidden.add(id));
     for (const group of Object.values(model.visualGroups)) {
       if (group.collapsed) group.metricIds.forEach((id) => hidden.add(id));
     }
     return hidden;
-  }, [model]);
+  }, [manuallyHiddenMetricIds, model]);
   const allEdges = useMemo(
     () => [...calculationRelations, ...model.influenceRelations]
       .filter((edge) => !hiddenMetricIds.has(edge.from) && !hiddenMetricIds.has(edge.to)),
@@ -421,39 +412,21 @@ export default function App() {
   }, [library]);
 
   const commitModel = useCallback((update: (current: ModelState) => ModelState) => {
-    setHistory((current) => {
-      const next = update(current.present);
-      if (next === current.present) return current;
-      return {
-        past: pushPast(current.past, current.present),
-        present: next,
-        future: [],
-      };
-    });
+    setHistory((current) => commitModelHistory(current, update));
+  }, []);
+
+  const updatePresentation = useCallback((update: (current: ModelState) => ModelState) => {
+    setHistory((current) => updateModelPresentationWithoutHistory(current, update));
   }, []);
 
   const undo = useCallback(() => {
-    setHistory((current) => {
-      const previous = current.past[current.past.length - 1];
-      if (!previous) return current;
-      return {
-        past: current.past.slice(0, -1),
-        present: previous,
-        future: [current.present, ...current.future].slice(0, HISTORY_LIMIT),
-      };
-    });
+    inputChangeRef.current = null;
+    setHistory(undoModelHistory);
   }, []);
 
   const redo = useCallback(() => {
-    setHistory((current) => {
-      const next = current.future[0];
-      if (!next) return current;
-      return {
-        past: pushPast(current.past, current.present),
-        present: next,
-        future: current.future.slice(1),
-      };
-    });
+    inputChangeRef.current = null;
+    setHistory(redoModelHistory);
   }, []);
 
   const handleFitToView = useCallback(() => {
@@ -507,7 +480,10 @@ export default function App() {
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
-      if (target?.matches('input, textarea, select')) return;
+      const isModelRangeInput = target instanceof HTMLInputElement
+        && target.type === 'range'
+        && target.dataset.modelHistoryInput === 'true';
+      if (target?.matches('input, textarea, select') && !isModelRangeInput) return;
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'z') {
         event.preventDefault();
         if (event.shiftKey) redo();
@@ -548,6 +524,30 @@ export default function App() {
     });
   }, []);
 
+  const updateScenarioOverride = useCallback((
+    current: InputOverridesByScenario,
+    metricId: string,
+    value: number,
+  ): InputOverridesByScenario => ({
+    ...current,
+    [scenarioId]: {
+      ...(current[scenarioId] ?? {}),
+      [metricId]: value,
+    },
+  }), [scenarioId]);
+
+  const handleBeginInputChange = useCallback((id: string) => {
+    setHistory((current) => {
+      const active = inputChangeRef.current;
+      if (active?.id === id) return current;
+      const finalized = active
+        ? finalizeTransientHistory(current, active.startSnapshot)
+        : current;
+      inputChangeRef.current = { id, startSnapshot: finalized.present };
+      return finalized;
+    });
+  }, []);
+
   const handleChangeInput = useCallback((id: string, rawValue: number) => {
     if (!Number.isFinite(rawValue)) return;
     const metric = model.metrics[id];
@@ -556,25 +556,46 @@ export default function App() {
     const value = metric.inputConfig
       ? Math.min(metric.inputConfig.max, Math.max(metric.inputConfig.min, rounded))
       : rounded;
-    setInputOverridesByScenario((current) => ({
-      ...current,
-      [scenarioId]: {
-        ...(current[scenarioId] ?? {}),
-        [id]: value,
-      },
-    }));
-  }, [model.metrics, scenarioId]);
+    setHistory((current) => {
+      const update = (overrides: InputOverridesByScenario) => (
+        updateScenarioOverride(overrides, id, value)
+      );
+      return inputChangeRef.current
+        ? updateInputOverridesWithoutHistory(current, update)
+        : commitInputOverridesHistory(current, update);
+    });
+  }, [model.metrics, updateScenarioOverride]);
+
+  const handleEndInputChange = useCallback((id: string) => {
+    setHistory((current) => {
+      const active = inputChangeRef.current;
+      if (!active || active.id !== id) return current;
+      inputChangeRef.current = null;
+      return finalizeTransientHistory(current, active.startSnapshot);
+    });
+  }, []);
 
   const handleResetInput = useCallback((id: string) => {
-    setInputOverridesByScenario((current) => {
-      const scenarioOverrides = { ...(current[scenarioId] ?? {}) };
-      delete scenarioOverrides[id];
-      return { ...current, [scenarioId]: scenarioOverrides };
+    setHistory((current) => {
+      const active = inputChangeRef.current;
+      inputChangeRef.current = null;
+      const finalized = active
+        ? finalizeTransientHistory(current, active.startSnapshot)
+        : current;
+      return commitInputOverridesHistory(finalized, (overrides) => {
+        const scenarioOverrides = { ...(overrides[scenarioId] ?? {}) };
+        delete scenarioOverrides[id];
+        return { ...overrides, [scenarioId]: scenarioOverrides };
+      });
     });
   }, [scenarioId]);
 
   const handleResetScenario = useCallback(() => {
-    setInputOverridesByScenario((current) => ({ ...current, [scenarioId]: {} }));
+    inputChangeRef.current = null;
+    setHistory((current) => commitInputOverridesHistory(
+      current,
+      (overrides) => ({ ...overrides, [scenarioId]: {} }),
+    ));
   }, [scenarioId]);
 
   const openBreakdownEditor = useCallback((id: string) => {
@@ -595,7 +616,6 @@ export default function App() {
       const blocking = checked.errors.find((error) => error.metricId === breakdownEditorMetricId);
       if (blocking) throw new Error(blocking.message);
       commitModel(() => candidate);
-      setInputOverridesByScenario((current) => sanitizeInputOverrides(candidate, current));
       setSelectedIds([breakdownEditorMetricId]);
       setBreakdownEditorMetricId(null);
       setNotice('Состав сохранён: итоговая метрика теперь рассчитывается из строк таблицы.');
@@ -607,10 +627,25 @@ export default function App() {
   const handleToggleBreakdown = useCallback((id: string) => {
     const breakdown = model.breakdowns?.[id];
     if (!breakdown) return;
-    commitModel((current) => toggleMetricBreakdown(current, id));
+    updatePresentation((current) => toggleMetricBreakdown(current, id));
     if (breakdown.expanded) setSelectedIds([id]);
     setMetricMenu(null);
-  }, [commitModel, model.breakdowns]);
+  }, [model.breakdowns, updatePresentation]);
+
+  const handleHideMetric = useCallback((id: string) => {
+    const hiddenTreeIds = structuralDescendantMetricIds(model, id);
+    hiddenTreeIds.add(id);
+    updatePresentation((current) => hideMetricOnCanvas(current, id));
+    setSelectedIds((current) => current.filter((metricId) => !hiddenTreeIds.has(metricId)));
+    setMetricMenu(null);
+    setNotice(`«${model.metrics[id]?.name ?? 'Метрика'}» скрыта с Canvas. Вернуть её можно через контекстное меню Canvas.`);
+  }, [model, updatePresentation]);
+
+  const handleRevealHiddenMetrics = useCallback(() => {
+    updatePresentation(showAllMetricsOnCanvas);
+    setCanvasMenu(null);
+    setNotice('Скрытые вручную метрики снова показаны на Canvas. Свёрнутые ветки остались свёрнутыми.');
+  }, [updatePresentation]);
 
   const handleRemoveBreakdown = useCallback(() => {
     if (!breakdownEditorMetricId) return;
@@ -618,7 +653,6 @@ export default function App() {
     if (!metric || !window.confirm('Удалить табличный состав и оставить текущий итог обычным вводимым значением?')) return;
     const candidate = removeMetricBreakdown(model, breakdownEditorMetricId, metric.value ?? 0);
     commitModel(() => candidate);
-    setInputOverridesByScenario((current) => sanitizeInputOverrides(candidate, current));
     setBreakdownEditorMetricId(null);
     setSelectedIds([breakdownEditorMetricId]);
     setNotice('Состав удалён; текущий итог сохранён как обычное значение метрики.');
@@ -645,7 +679,7 @@ export default function App() {
       startX: event.clientX,
       startY: event.clientY,
       originalPositions,
-      startModel: model,
+      startSnapshot: history.present,
       moved: false,
     };
 
@@ -656,7 +690,7 @@ export default function App() {
       const deltaY = (moveEvent.clientY - drag.startY) / transform.scale;
       drag.moved = drag.moved || Math.abs(deltaX) > 0.5 || Math.abs(deltaY) > 0.5;
       setHistory((current) => {
-        const metrics = { ...current.present.metrics };
+        const metrics = { ...current.present.model.metrics };
         for (const [id, origin] of Object.entries(drag.originalPositions)) {
           if (!metrics[id]) continue;
           metrics[id] = {
@@ -664,18 +698,20 @@ export default function App() {
             position: { x: origin.x + deltaX, y: origin.y + deltaY },
           };
         }
-        return { ...current, present: { ...current.present, metrics } };
+        return {
+          ...current,
+          present: {
+            ...current.present,
+            model: { ...current.present.model, metrics },
+          },
+        };
       });
     };
 
     const handleUp = () => {
       const drag = dragRef.current;
       if (drag?.moved) {
-        setHistory((current) => ({
-          past: pushPast(current.past, drag.startModel),
-          present: current.present,
-          future: [],
-        }));
+        setHistory((current) => finalizeTransientHistory(current, drag.startSnapshot));
       }
       dragRef.current = null;
       window.removeEventListener('pointermove', handleMove);
@@ -683,7 +719,7 @@ export default function App() {
     };
     window.addEventListener('pointermove', handleMove);
     window.addEventListener('pointerup', handleUp);
-  }, [model, transform.scale]);
+  }, [history.present, model, transform.scale]);
 
   const handleStartDrag = useCallback((id: string, event: ReactPointerEvent) => {
     const ids = selectedSet.has(id) ? selectedIds : [id];
@@ -734,6 +770,7 @@ export default function App() {
         ...current,
         activeNorthStarId: current.activeNorthStarId === id ? null : current.activeNorthStarId,
         metrics,
+        hiddenMetricIds: (current.hiddenMetricIds ?? []).filter((metricId) => !ownedMetricIds.has(metricId)),
         breakdowns,
         domains: syncDomainMemberships(metrics, current.domains),
         scenarios,
@@ -743,12 +780,6 @@ export default function App() {
         ),
       };
     });
-    setInputOverridesByScenario((current) => Object.fromEntries(
-      Object.entries(current).map(([scenarioKey, overrides]) => [
-        scenarioKey,
-        Object.fromEntries(Object.entries(overrides).filter(([metricId]) => !ownedMetricIds.has(metricId))),
-      ]),
-    ));
     setSelectedIds((current) => current.filter((metricId) => metricId !== id));
     setMetricMenu(null);
   }, [calculationRelations, commitModel, model.breakdowns, model.metrics]);
@@ -933,6 +964,7 @@ export default function App() {
               min,
               max,
               step: Math.max((max - min) / 100, draft.unitPreset === 'percent' ? 0.001 : 0.01),
+              integer: existing?.inputConfig?.integer,
             },
       };
       const metrics = { ...model.metrics, [id]: metric };
@@ -946,11 +978,11 @@ export default function App() {
           },
         };
       }
-      const candidate: ModelState = {
+      const candidate = synchronizeMetricBreakdownFormulas({
         ...model,
         metrics,
         domains: syncDomainMemberships(metrics, model.domains),
-      };
+      });
       topologicalOrder(candidate);
       const checked = evaluateModel(candidate, scenarioId, currentOverrides);
       const blocking = checked.errors.find((error) => error.metricId === id);
@@ -1105,9 +1137,9 @@ export default function App() {
   }, [inputOverridesByScenario, model, scenarioId, transform]);
 
   const loadWorkspaceIntoUi = useCallback((workspace: WorkspaceDocument) => {
-    setHistory({ past: [], present: workspace.model, future: [] });
+    setHistory(createModelHistory(workspace.model, workspace.inputOverridesByScenario));
     setScenarioId(workspace.activeScenarioId);
-    setInputOverridesByScenario(workspace.inputOverridesByScenario);
+    inputChangeRef.current = null;
     setTransform(workspace.viewport);
     setSelectedIds([]);
     setSelectedGroupId(null);
@@ -1292,7 +1324,7 @@ export default function App() {
 
   const handleToggleDomain = useCallback((id: string) => {
     if (id === '__unassigned__') return;
-    commitModel((current) => current.domains[id]
+    updatePresentation((current) => current.domains[id]
       ? {
           ...current,
           domains: {
@@ -1304,7 +1336,7 @@ export default function App() {
           },
         }
       : current);
-  }, [commitModel]);
+  }, [updatePresentation]);
 
   const handleOpenDomainManager = useCallback((id?: string) => {
     setDomainManagerInitialId(id ?? null);
@@ -1485,7 +1517,7 @@ export default function App() {
                 setSelectedGroupId(id);
                 setSelectedIds([]);
               }}
-              onToggleCollapsed={(id) => commitModel((current) => ({
+              onToggleCollapsed={(id) => updatePresentation((current) => ({
                 ...current,
                 visualGroups: {
                   ...current.visualGroups,
@@ -1522,7 +1554,7 @@ export default function App() {
                 selected={selectedSet.has(metric.id)}
                 relationHovered={hoveredEdge?.from === metric.id || hoveredEdge?.to === metric.id}
                 onSelect={selectMetric}
-                onDelete={handleDeleteMetric}
+                onHide={handleHideMetric}
                 onStartDrag={handleStartDrag}
                 onConnectionPointerDown={handleConnectionPointerDown}
                 onContextMenu={(id, event) => {
@@ -1579,7 +1611,9 @@ export default function App() {
           overriddenIds={overriddenIds}
           selectedId={primarySelectedId ?? ''}
           onSelect={(id) => selectMetric(id)}
+          onBeginInputChange={handleBeginInputChange}
           onChangeInput={handleChangeInput}
+          onEndInputChange={handleEndInputChange}
           onReset={handleResetInput}
           collapsed={!leftOpen}
           onToggle={() => setLeftOpen((open) => !open)}
@@ -1781,6 +1815,8 @@ export default function App() {
           x={canvasMenu.x}
           y={canvasMenu.y}
           onCreateMetric={() => openCreateEditor(canvasMenu.point)}
+          hiddenMetricCount={manuallyHiddenMetricIds.size}
+          onRevealHiddenMetrics={handleRevealHiddenMetrics}
         />
       ) : null}
 

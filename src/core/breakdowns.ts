@@ -10,8 +10,10 @@ import type {
   WorkspaceDocument,
 } from './model';
 import {
+  describeUnit,
   MONTH,
   PERSON,
+  quantityRateTimeBasis,
   RUB,
   RUB_PER_PERSON_MONTH,
   unitsEqual,
@@ -228,74 +230,233 @@ export function breakdownSourceMetricIds(breakdown: MetricBreakdownDef): string[
   ].filter((metricId): metricId is string => Boolean(metricId))))];
 }
 
+function quantityRateTerm(
+  resultMetric: MetricDef,
+  quantityMetric: MetricDef,
+  rateMetric: MetricDef,
+): FormulaNode {
+  const timeBasis = quantityRateTimeBasis(
+    resultMetric.unit,
+    quantityMetric.unit,
+    rateMetric.unit,
+  );
+  if (!timeBasis) {
+    throw new Error(
+      `Единицы «${describeUnit(quantityMetric.unit)}» и «${describeUnit(rateMetric.unit)}» `
+      + `не дают единицу результата «${describeUnit(resultMetric.unit)}».`,
+    );
+  }
+  return timeBasis === 'month'
+    ? multiply(multiply(ref(rateMetric.id), literal(1, MONTH)), ref(quantityMetric.id))
+    : multiply(ref(rateMetric.id), ref(quantityMetric.id));
+}
+
+function breakdownFormulaAst(
+  breakdown: MetricBreakdownDef,
+  resultMetric: MetricDef,
+  metrics: Record<string, MetricDef>,
+): FormulaNode {
+  return sum(breakdown.rows.map((row) => {
+    if (breakdown.template === 'amount_list') {
+      const amountId = row.amountSourceMetricId ?? row.amountMetricId;
+      if (!amountId || !metrics[amountId]) {
+        throw new Error(`Позиция «${row.name}» не содержит метрику суммы.`);
+      }
+      return ref(amountId);
+    }
+
+    const quantityId = row.quantitySourceMetricId ?? row.quantityMetricId;
+    const rateId = row.rateSourceMetricId ?? row.rateMetricId;
+    const quantityMetric = quantityId ? metrics[quantityId] : undefined;
+    const rateMetric = rateId ? metrics[rateId] : undefined;
+    if (!quantityMetric || !rateMetric) {
+      throw new Error(`Позиция «${row.name}» должна содержать количество и ставку.`);
+    }
+    return quantityRateTerm(resultMetric, quantityMetric, rateMetric);
+  }));
+}
+
+/**
+ * Rebuilds table-owned formulas after a child metric changes its unit. Invalid
+ * intermediate pairs are left untouched so the user can edit quantity and
+ * rate one after another; as soon as the pair becomes compatible, the formula
+ * is synchronized automatically.
+ */
+export function synchronizeMetricBreakdownFormulas(sourceModel: ModelState): ModelState {
+  const metrics = { ...sourceModel.metrics };
+  const synchronizedMetricIds: string[] = [];
+
+  for (const breakdown of Object.values(sourceModel.breakdowns ?? {})) {
+    const resultMetric = metrics[breakdown.resultMetricId];
+    if (!resultMetric) continue;
+    try {
+      const ast = breakdownFormulaAst(breakdown, resultMetric, metrics);
+      metrics[resultMetric.id] = {
+        ...resultMetric,
+        formula: {
+          source: '',
+          ast,
+        },
+      };
+      synchronizedMetricIds.push(resultMetric.id);
+    } catch {
+      // Keep the previous formula while the user is completing a compatible pair.
+    }
+  }
+
+  for (const metricId of synchronizedMetricIds) {
+    const metric = metrics[metricId];
+    if (!metric.formula) continue;
+    metrics[metricId] = {
+      ...metric,
+      formula: {
+        ...metric.formula,
+        source: formatFormulaAst(metric.formula.ast, metrics),
+      },
+    };
+  }
+
+  return synchronizedMetricIds.length > 0 ? { ...sourceModel, metrics } : sourceModel;
+}
+
 export function allBreakdownChildMetricIds(model: ModelState): Set<string> {
   return new Set(
     Object.values(model.breakdowns ?? {}).flatMap(breakdownChildMetricIds),
   );
 }
 
-export function collapsedBreakdownMetricIds(model: ModelState): Set<string> {
-  const breakdowns = Object.values(model.breakdowns ?? {});
-  const ownedMetricIds = new Set(
-    breakdowns.flatMap(breakdownChildMetricIds),
-  );
-  const sourceMetricIds = new Set(
-    breakdowns.flatMap(breakdownSourceMetricIds),
-  );
-  const conditionallyVisibleMetricIds = new Set([
-    ...ownedMetricIds,
-    ...sourceMetricIds,
-  ]);
-  const breakdownResultMetricIds = new Set(
-    breakdowns.map((breakdown) => breakdown.resultMetricId),
-  );
-  const visibleMetricIds = new Set(
-    Object.keys(model.metrics).filter(
-      (metricId) => !conditionallyVisibleMetricIds.has(metricId),
-    ),
-  );
+function metricsShareDomain(left: MetricDef | undefined, right: MetricDef | undefined): boolean {
+  if (!left || !right) return false;
+  if (left.domainIds.length === 0 && right.domainIds.length === 0) return true;
+  const rightDomainIds = new Set(right.domainIds);
+  return left.domainIds.some((domainId) => rightDomainIds.has(domainId));
+}
 
-  for (const resultMetricId of breakdownResultMetricIds) {
-    if (!ownedMetricIds.has(resultMetricId)) {
-      visibleMetricIds.add(resultMetricId);
-    }
-  }
-
+function isExclusiveFormulaDependency(
+  model: ModelState,
+  parentMetricId: string,
+  dependencyId: string,
+): boolean {
+  let referencedByParent = false;
   for (const metric of Object.values(model.metrics)) {
-    if (!metric.formula || breakdownResultMetricIds.has(metric.id)) continue;
-    extractDependencies(metric.formula.ast)
-      .forEach((metricId) => {
-        if (!ownedMetricIds.has(metricId)) {
-          visibleMetricIds.add(metricId);
-        }
-      });
+    if (!metric.formula || !extractDependencies(metric.formula.ast).has(dependencyId)) continue;
+    if (metric.id !== parentMetricId) return false;
+    referencedByParent = true;
   }
-  if (model.activeNorthStarId) {
-    visibleMetricIds.add(model.activeNorthStarId);
-  }
+  return referencedByParent;
+}
 
-  let changed = true;
-  while (changed) {
-    changed = false;
-    for (const breakdown of breakdowns) {
-      if (!breakdown.expanded || !visibleMetricIds.has(breakdown.resultMetricId)) continue;
-      for (const metricId of [
-        ...breakdownChildMetricIds(breakdown),
-        ...breakdownSourceMetricIds(breakdown),
-      ]) {
-        if (!visibleMetricIds.has(metricId)) {
-          visibleMetricIds.add(metricId);
-          changed = true;
-        }
+function isExclusiveInputDependency(
+  model: ModelState,
+  parentMetricId: string,
+  dependencyId: string,
+): boolean {
+  return model.metrics[dependencyId]?.valueSource === 'input'
+    && isExclusiveFormulaDependency(model, parentMetricId, dependencyId);
+}
+
+/**
+ * Structural children belong to the collapsible Canvas tree. Table rows are
+ * explicit children. Formula dependencies join the tree when they share the
+ * same semantic branch or are an input used only by this parent. This keeps
+ * cross-branch aggregates visible while allowing a leaf driver without a
+ * domain (for example, a commission rate) to collapse with its formula.
+ */
+export function structuralChildMetricIds(model: ModelState, parentMetricId: string): string[] {
+  const parent = model.metrics[parentMetricId];
+  if (!parent) return [];
+  const breakdown = model.breakdowns?.[parentMetricId];
+  const childIds = new Set<string>(breakdown
+    ? [...breakdownChildMetricIds(breakdown), ...breakdownSourceMetricIds(breakdown)]
+    : []);
+
+  if (parent.formula) {
+    for (const dependencyId of extractDependencies(parent.formula.ast)) {
+      if (
+        (
+          metricsShareDomain(parent, model.metrics[dependencyId])
+          && isExclusiveFormulaDependency(model, parentMetricId, dependencyId)
+        )
+        || isExclusiveInputDependency(model, parentMetricId, dependencyId)
+      ) {
+        childIds.add(dependencyId);
       }
     }
   }
 
-  return new Set(
-    [...conditionallyVisibleMetricIds].filter(
-      (metricId) => !visibleMetricIds.has(metricId),
+  childIds.delete(parentMetricId);
+  return [...childIds].filter((metricId) => Boolean(model.metrics[metricId]));
+}
+
+export function structuralDescendantMetricIds(model: ModelState, parentMetricId: string): Set<string> {
+  const descendants = new Set<string>();
+  const visit = (metricId: string, path: Set<string>) => {
+    if (path.has(metricId)) return;
+    const nextPath = new Set(path).add(metricId);
+    for (const childId of structuralChildMetricIds(model, metricId)) {
+      if (childId === parentMetricId) continue;
+      descendants.add(childId);
+      visit(childId, nextPath);
+    }
+  };
+  visit(parentMetricId, new Set());
+  return descendants;
+}
+
+export function collapsedBreakdownMetricIds(
+  model: ModelState,
+  manuallyHiddenMetricIds: ReadonlySet<string> = new Set(),
+): Set<string> {
+  const breakdowns = Object.values(model.breakdowns ?? {});
+  const conditionallyVisibleMetricIds = new Set<string>();
+  for (const breakdown of breakdowns) {
+    structuralDescendantMetricIds(model, breakdown.resultMetricId)
+      .forEach((metricId) => conditionallyVisibleMetricIds.add(metricId));
+  }
+  const visibleMetricIds = new Set(
+    Object.keys(model.metrics).filter(
+      (metricId) => !conditionallyVisibleMetricIds.has(metricId) && !manuallyHiddenMetricIds.has(metricId),
     ),
   );
+
+  const revealTree = (parentMetricId: string, path: Set<string>) => {
+    if (path.has(parentMetricId)) return;
+    const nextPath = new Set(path).add(parentMetricId);
+    for (const childId of structuralChildMetricIds(model, parentMetricId)) {
+      if (manuallyHiddenMetricIds.has(childId)) continue;
+      visibleMetricIds.add(childId);
+      if (model.breakdowns?.[childId] && !model.breakdowns[childId].expanded) continue;
+      revealTree(childId, nextPath);
+    }
+  };
+
+  for (const breakdown of breakdowns) {
+    if (breakdown.expanded && visibleMetricIds.has(breakdown.resultMetricId)) {
+      revealTree(breakdown.resultMetricId, new Set());
+    }
+  }
+
+  return new Set(
+    [...conditionallyVisibleMetricIds].filter((metricId) => !visibleMetricIds.has(metricId)),
+  );
+}
+
+export function hideMetricOnCanvas(model: ModelState, metricId: string): ModelState {
+  if (!model.metrics[metricId]) return model;
+  const hiddenMetricIds = new Set(model.hiddenMetricIds ?? []);
+  hiddenMetricIds.add(metricId);
+  structuralDescendantMetricIds(model, metricId)
+    .forEach((descendantId) => hiddenMetricIds.add(descendantId));
+  if (hiddenMetricIds.size === (model.hiddenMetricIds?.length ?? 0)) return model;
+  return {
+    ...model,
+    hiddenMetricIds: [...hiddenMetricIds],
+  };
+}
+
+export function showAllMetricsOnCanvas(model: ModelState): ModelState {
+  if (!model.hiddenMetricIds?.length) return model;
+  return { ...model, hiddenMetricIds: [] };
 }
 
 export function canHaveMetricBreakdown(metric: MetricDef | undefined): boolean {
@@ -353,6 +514,7 @@ function removeOwnedMetrics(
   return {
     ...model,
     metrics,
+    hiddenMetricIds: (model.hiddenMetricIds ?? []).filter((metricId) => !removableMetricIds.has(metricId)),
     domains: syncDomains(metrics, model.domains),
     scenarios,
     visualGroups,
@@ -411,7 +573,6 @@ export function upsertMetricBreakdown(
   let model = removeOwnedMetrics(sourceModel, obsoleteMetricIds, resultMetricId);
   const metrics = { ...model.metrics };
   const rows: MetricBreakdownRowDef[] = [];
-  const terms = [];
   const childCount = input.rows.reduce((count, row) => (
     count + (
       input.template === 'amount_list'
@@ -446,7 +607,6 @@ export function upsertMetricBreakdown(
           throw new Error(`Метрика «${source.name}» несовместима с итогом «${parent.name}».`);
         }
         row.amountSourceMetricId = sourceId;
-        terms.push(ref(sourceId));
       } else {
         const id = previous?.amountMetricId ?? `breakdown-${resultMetricId}-${rowInput.id}-amount`;
         const existing = sourceModel.metrics[id];
@@ -475,7 +635,6 @@ export function upsertMetricBreakdown(
           });
         childIndex += 1;
         row.amountMetricId = id;
-        terms.push(ref(id));
       }
     } else {
       let quantityId = rowInput.quantitySourceMetricId;
@@ -486,8 +645,8 @@ export function upsertMetricBreakdown(
         if (oldMetricIds.has(quantityId)) {
           throw new Error('В качестве количества выберите самостоятельную метрику или метрику из другого состава.');
         }
-        if (quantity.behavior !== 'stock' || !unitsEqual(quantity.unit, PERSON)) {
-          throw new Error(`Метрика «${quantity.name}» должна быть Stock-метрикой в людях.`);
+        if (quantity.behavior !== 'stock') {
+          throw new Error(`Метрика «${quantity.name}» должна быть Stock-метрикой количества.`);
         }
         row.quantitySourceMetricId = quantityId;
       } else {
@@ -511,7 +670,7 @@ export function upsertMetricBreakdown(
               ?? uniqueAlias(`${aliasBase}_quantity`, metrics, quantityId),
             value: Math.max(0, finiteOr(rowInput.quantity, 1)),
             behavior: 'stock',
-            unit: PERSON,
+            unit: existingQuantity?.unit ?? PERSON,
             position: existingQuantity?.position ?? {
               x: startX + childIndex * spacing - 136,
               y: parent.position.y + 260,
@@ -530,8 +689,8 @@ export function upsertMetricBreakdown(
         if (oldMetricIds.has(rateId)) {
           throw new Error('В качестве ставки выберите самостоятельную метрику или метрику из другого состава.');
         }
-        if (rate.behavior !== 'rate' || !unitsEqual(rate.unit, RUB_PER_PERSON_MONTH)) {
-          throw new Error(`Метрика «${rate.name}» должна быть Rate-метрикой в рублях на человека в месяц.`);
+        if (rate.behavior !== 'rate') {
+          throw new Error(`Метрика «${rate.name}» должна быть Rate-метрикой.`);
         }
         row.rateSourceMetricId = rateId;
       } else {
@@ -555,7 +714,7 @@ export function upsertMetricBreakdown(
               ?? uniqueAlias(`${aliasBase}_monthly_rate`, metrics, rateId),
             value: Math.max(0, finiteOr(rowInput.rate, 0)),
             behavior: 'rate',
-            unit: RUB_PER_PERSON_MONTH,
+            unit: existingRate?.unit ?? RUB_PER_PERSON_MONTH,
             position: existingRate?.position ?? {
               x: startX + childIndex * spacing - 112,
               y: parent.position.y + 284,
@@ -564,12 +723,18 @@ export function upsertMetricBreakdown(
         childIndex += 1;
         row.rateMetricId = rateId;
       }
-      terms.push(multiply(multiply(ref(rateId), literal(1, MONTH)), ref(quantityId)));
     }
     rows.push(row);
   }
 
-  const ast = sum(terms);
+  const breakdown: MetricBreakdownDef = {
+    id: oldBreakdown?.id ?? `breakdown-${resultMetricId}`,
+    resultMetricId,
+    template: input.template,
+    rows,
+    expanded: oldBreakdown?.expanded ?? false,
+  };
+  const ast = breakdownFormulaAst(breakdown, parent, metrics);
   metrics[resultMetricId] = {
     ...parent,
     value: null,
@@ -597,13 +762,6 @@ export function upsertMetricBreakdown(
     },
   };
 
-  const breakdown: MetricBreakdownDef = {
-    id: oldBreakdown?.id ?? `breakdown-${resultMetricId}`,
-    resultMetricId,
-    template: input.template,
-    rows,
-    expanded: oldBreakdown?.expanded ?? false,
-  };
   const scenarios = Object.fromEntries(
     Object.entries(model.scenarios).map(([id, scenario]) => {
       const overrides = { ...scenario.overrides };
@@ -627,12 +785,26 @@ export function upsertMetricBreakdown(
 export function toggleMetricBreakdown(model: ModelState, resultMetricId: string): ModelState {
   const breakdown = model.breakdowns?.[resultMetricId];
   if (!breakdown) return model;
+  const opening = !breakdown.expanded;
+  const descendants = opening
+    ? structuralDescendantMetricIds(model, resultMetricId)
+    : new Set<string>();
+  const breakdowns = { ...(model.breakdowns ?? {}) };
+  breakdowns[resultMetricId] = { ...breakdown, expanded: opening };
+  if (opening) {
+    for (const descendantId of descendants) {
+      const nestedBreakdown = breakdowns[descendantId];
+      if (nestedBreakdown) {
+        breakdowns[descendantId] = { ...nestedBreakdown, expanded: true };
+      }
+    }
+  }
   return {
     ...model,
-    breakdowns: {
-      ...(model.breakdowns ?? {}),
-      [resultMetricId]: { ...breakdown, expanded: !breakdown.expanded },
-    },
+    hiddenMetricIds: opening
+      ? (model.hiddenMetricIds ?? []).filter((metricId) => !descendants.has(metricId))
+      : model.hiddenMetricIds,
+    breakdowns,
   };
 }
 

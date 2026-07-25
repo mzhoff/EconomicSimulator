@@ -3,7 +3,12 @@ import { extractDependencies } from './ast';
 import { findDuplicateAliases, validateMetricAlias } from './formula-parser';
 import { MODEL_SCHEMA_VERSION } from './model';
 import type { FormulaNode, ModelState, ValidationIssue, WorkspaceDocument } from './model';
-import { PERSON, RUB, RUB_PER_PERSON_MONTH, unitsEqual } from './units';
+import {
+  describeUnit,
+  quantityRateTimeBasis,
+  RUB,
+  unitsEqual,
+} from './units';
 
 const metricBehaviors = new Set(['stock', 'flow', 'rate', 'one_off']);
 const metricKinds = new Set(['input', 'derived', 'observed', 'assumption']);
@@ -193,11 +198,17 @@ function validateModelShape(value: unknown, path: string, issues: ValidationIssu
           issues.push({ path: `${metricPath}.inputConfig`, message: 'Input config должен содержать min < max и положительный step.' });
         } else if (
           rawMetric.formula === undefined
-          &&
-          isFiniteNumber(rawMetric.value)
+          && isFiniteNumber(rawMetric.value)
           && (rawMetric.value < rawMetric.inputConfig.min || rawMetric.value > rawMetric.inputConfig.max)
         ) {
           issues.push({ path: `${metricPath}.value`, message: 'Значение должно находиться между min и max.' });
+        }
+        if (
+          isRecord(rawMetric.inputConfig)
+          && rawMetric.inputConfig.integer !== undefined
+          && typeof rawMetric.inputConfig.integer !== 'boolean'
+        ) {
+          issues.push({ path: `${metricPath}.inputConfig.integer`, message: 'Признак целого значения должен быть boolean.' });
         }
       }
     }
@@ -246,6 +257,14 @@ function validateModelShape(value: unknown, path: string, issues: ValidationIssu
       if (typeof rawGroup.collapsed !== 'boolean') {
         issues.push({ path: `${groupPath}.collapsed`, message: 'collapsed должен быть boolean.' });
       }
+    }
+  }
+
+  if (value.hiddenMetricIds !== undefined) {
+    if (!Array.isArray(value.hiddenMetricIds) || value.hiddenMetricIds.some((metricId) => typeof metricId !== 'string')) {
+      issues.push({ path: `${path}.hiddenMetricIds`, message: 'hiddenMetricIds должен быть массивом строк.' });
+    } else if (new Set(value.hiddenMetricIds).size !== value.hiddenMetricIds.length) {
+      issues.push({ path: `${path}.hiddenMetricIds`, message: 'Скрытая метрика не должна повторяться.' });
     }
   }
 
@@ -411,6 +430,11 @@ function validateModelSemantics(model: ModelState, issues: ValidationIssue[]): v
       }
     }
   }
+  for (const metricId of model.hiddenMetricIds ?? []) {
+    if (!model.metrics[metricId]) {
+      issues.push({ path: 'model.hiddenMetricIds', message: `Скрытая метрика «${metricId}» не существует.` });
+    }
+  }
   const claimedBreakdownMetrics = new Set<string>();
   for (const breakdown of Object.values(model.breakdowns ?? {})) {
     const parent = model.metrics[breakdown.resultMetricId];
@@ -452,11 +476,23 @@ function validateModelSemantics(model: ModelState, issues: ValidationIssue[]): v
         const rateId = row.rateSourceMetricId ?? row.rateMetricId;
         const quantity = quantityId ? model.metrics[quantityId] : undefined;
         const rate = rateId ? model.metrics[rateId] : undefined;
-        if (quantity && (quantity.behavior !== 'stock' || !unitsEqual(quantity.unit, PERSON))) {
-          issues.push({ path: `model.breakdowns.${breakdown.resultMetricId}.rows.${row.id}`, message: 'Количество позиции должно быть Stock-метрикой в людях.' });
+        if (quantity && quantity.behavior !== 'stock') {
+          issues.push({ path: `model.breakdowns.${breakdown.resultMetricId}.rows.${row.id}`, message: 'Количество позиции должно быть Stock-метрикой.' });
         }
-        if (rate && (rate.behavior !== 'rate' || !unitsEqual(rate.unit, RUB_PER_PERSON_MONTH))) {
-          issues.push({ path: `model.breakdowns.${breakdown.resultMetricId}.rows.${row.id}`, message: 'Ставка позиции должна быть Rate-метрикой в рублях на человека в месяц.' });
+        if (rate && rate.behavior !== 'rate') {
+          issues.push({ path: `model.breakdowns.${breakdown.resultMetricId}.rows.${row.id}`, message: 'Ставка позиции должна быть Rate-метрикой.' });
+        }
+        if (
+          quantity
+          && rate
+          && quantity.behavior === 'stock'
+          && rate.behavior === 'rate'
+          && !quantityRateTimeBasis(parent.unit, quantity.unit, rate.unit)
+        ) {
+          issues.push({
+            path: `model.breakdowns.${breakdown.resultMetricId}.rows.${row.id}`,
+            message: `Единицы количества «${describeUnit(quantity.unit)}» и ставки «${describeUnit(rate.unit)}» не дают единицу результата «${describeUnit(parent.unit)}».`,
+          });
         }
       }
     }

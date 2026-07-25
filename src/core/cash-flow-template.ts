@@ -303,6 +303,7 @@ export function createCashFlowModel(): ModelState {
     domains: domainsFromMetrics(metrics),
     visualGroups: {},
     breakdowns: {},
+    hiddenMetricIds: [],
     scenarios: {
       base: {
         id: 'base',

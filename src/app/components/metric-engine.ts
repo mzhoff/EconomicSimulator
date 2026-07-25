@@ -7,8 +7,13 @@ export {
   canHaveMetricBreakdown,
   collapsedBreakdownMetricIds,
   convertMetricBreakdownTemplate,
+  hideMetricOnCanvas,
   metricBreakdownInputFromFormula,
   removeMetricBreakdown,
+  showAllMetricsOnCanvas,
+  structuralChildMetricIds,
+  structuralDescendantMetricIds,
+  synchronizeMetricBreakdownFormulas,
   toggleMetricBreakdown,
   upsertMetricBreakdown,
 } from '../../core/breakdowns';

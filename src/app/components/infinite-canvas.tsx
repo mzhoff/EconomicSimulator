@@ -193,6 +193,7 @@ export function InfiniteCanvas({
   return (
     <div
       ref={containerRef}
+      data-testid="infinite-canvas"
       className="absolute inset-0 overflow-hidden"
       style={{
         backgroundColor: '#edeff3',

@@ -1,12 +1,20 @@
-import { useCallback, useRef } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type MouseEvent as ReactMouseEvent,
+} from 'react';
 import {
   Activity,
+  Check,
+  Copy,
   Database,
+  EyeOff,
   GitBranch,
   Sparkles,
   TableProperties,
   Ticket,
-  Trash2,
   TrendingDown,
   TrendingUp,
 } from 'lucide-react';
@@ -39,12 +47,81 @@ const portLabels: Record<MetricPortSide, string> = {
   bottom: 'снизу',
 };
 
+async function copyText(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    const textarea = document.createElement('textarea');
+    try {
+      textarea.value = text;
+      textarea.setAttribute('readonly', '');
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.select();
+      return document.execCommand('copy');
+    } catch {
+      return false;
+    } finally {
+      textarea.remove();
+    }
+  }
+}
+
+function MetricAliasBadge({
+  alias,
+  compact,
+}: {
+  alias: string;
+  compact: boolean;
+}) {
+  const [copied, setCopied] = useState(false);
+  const resetTimerRef = useRef<number | null>(null);
+
+  useEffect(() => () => {
+    if (resetTimerRef.current) window.clearTimeout(resetTimerRef.current);
+  }, []);
+
+  const handleCopy = useCallback(async (event: ReactMouseEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!await copyText(alias)) return;
+    setCopied(true);
+    if (resetTimerRef.current) window.clearTimeout(resetTimerRef.current);
+    resetTimerRef.current = window.setTimeout(() => setCopied(false), 1400);
+  }, [alias]);
+
+  return (
+    <button
+      type="button"
+      data-metric-alias-copy={alias}
+      onPointerDown={(event) => event.stopPropagation()}
+      onClick={handleCopy}
+      className={`group/alias inline-flex min-w-0 max-w-full cursor-copy items-center gap-[0.25rem] rounded-full border px-[0.375rem] py-[0.0625rem] font-mono transition-colors ${
+        compact ? 'text-[0.5rem]' : 'text-[0.5625rem]'
+      } ${
+        copied
+          ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+          : 'border-border/80 bg-muted/70 text-muted-foreground hover:border-muted-foreground/40 hover:bg-muted hover:text-foreground'
+      }`}
+      title={copied ? `Скопировано: ${alias}` : `Скопировать alias: ${alias}`}
+      aria-label={copied ? `Alias ${alias} скопирован` : `Скопировать alias ${alias}`}
+    >
+      <span className="truncate">{alias}</span>
+      {copied
+        ? <Check className="size-[0.5625rem] shrink-0" aria-hidden="true" />
+        : <Copy className="size-[0.5625rem] shrink-0 opacity-50 transition-opacity group-hover/alias:opacity-100" aria-hidden="true" />}
+    </button>
+  );
+}
+
 interface MetricCardProps {
   metric: MetricDef;
   selected: boolean;
   relationHovered?: boolean;
   onSelect: (id: string, additive: boolean) => void;
-  onDelete?: (id: string) => void;
+  onHide?: (id: string) => void;
   onStartDrag?: (id: string, event: React.PointerEvent) => void;
   onContextMenu?: (id: string, event: React.MouseEvent) => void;
   delta?: number;
@@ -66,7 +143,7 @@ export function MetricCard({
   selected,
   relationHovered = false,
   onSelect,
-  onDelete,
+  onHide,
   onStartDrag,
   onContextMenu,
   delta,
@@ -219,16 +296,17 @@ export function MetricCard({
               <GitBranch className="size-[0.6875rem]" />
             </button>
           ) : null}
-          {onDelete && (
+          {onHide && (
             <button
               onClick={(event) => {
                 event.stopPropagation();
-                onDelete(metric.id);
+                onHide(metric.id);
               }}
-              className="flex items-center justify-center size-[1.25rem] rounded-[var(--radius-sm)] text-muted-foreground opacity-0 group-hover:opacity-100 hover:text-red-500 hover:bg-red-50 transition-all cursor-pointer"
-              title="Удалить метрику"
+              className="flex items-center justify-center size-[1.25rem] rounded-[var(--radius-sm)] text-muted-foreground opacity-0 group-hover:opacity-100 hover:text-foreground hover:bg-accent transition-all cursor-pointer"
+              title="Скрыть метрику с Canvas"
+              aria-label={`Скрыть метрику «${metric.name}» с Canvas`}
             >
-              <Trash2 className="size-[0.625rem]" />
+              <EyeOff className="size-[0.625rem]" />
             </button>
           )}
         </div>
@@ -248,6 +326,10 @@ export function MetricCard({
               {delta! > 0 ? '+' : ''}{delta!.toFixed(1)}%
             </div>
           )}
+        </div>
+
+        <div className={`${isRate ? 'mt-[0.125rem]' : 'mt-[0.25rem]'} flex min-w-0`}>
+          <MetricAliasBadge alias={metric.alias} compact={isRate} />
         </div>
 
         <div className={`${isRate ? 'mt-[0.1875rem]' : 'mt-[0.375rem]'} flex items-center justify-between`}>

@@ -27,9 +27,7 @@ import type {
   MetricBreakdownRowInput,
 } from './metric-engine';
 import {
-  PERSON,
   RUB,
-  RUB_PER_PERSON_MONTH,
   unitsEqual,
 } from '../../core/units';
 
@@ -51,7 +49,6 @@ const moneyFormatter = new Intl.NumberFormat('ru-RU', {
 const numberFormatter = new Intl.NumberFormat('ru-RU', {
   maximumFractionDigits: 2,
 });
-const MONEY_INPUT_STEP = 0.01;
 type ReferenceField = 'amount' | 'quantity' | 'rate';
 
 interface ActiveReferencePicker {
@@ -151,9 +148,9 @@ function matchesReferenceField(
       && unitsEqual(candidate.unit, resultMetric.unit);
   }
   if (field === 'quantity') {
-    return candidate.behavior === 'stock' && unitsEqual(candidate.unit, PERSON);
+    return candidate.behavior === 'stock';
   }
-  return candidate.behavior === 'rate' && unitsEqual(candidate.unit, RUB_PER_PERSON_MONTH);
+  return candidate.behavior === 'rate';
 }
 
 function MetricBreakdownEditorContent({
@@ -325,7 +322,7 @@ function MetricBreakdownEditorContent({
             }`}>
               <span>Позиция</span>
               {draft.template === 'quantity_rate' ? <span className="text-right">Количество</span> : null}
-              <span className="text-right">{draft.template === 'amount_list' ? 'Сумма' : 'Ставка в месяц'}</span>
+              <span className="text-right">{draft.template === 'amount_list' ? 'Сумма' : 'Ставка'}</span>
               {draft.template === 'quantity_rate' ? <span className="text-right">Сумма</span> : null}
               <span>Комментарий</span>
               <span />
@@ -367,7 +364,6 @@ function MetricBreakdownEditorContent({
                           <NumberCell
                             label={`Количество для ${row.name}`}
                             value={row.quantity ?? 0}
-                            step={1}
                             onChange={(quantity) => updateRow(row.id, { quantity })}
                           />
                         </MetricValueCell>
@@ -387,9 +383,6 @@ function MetricBreakdownEditorContent({
                         <NumberCell
                           label={`${draft.template === 'amount_list' ? 'Сумма' : 'Ставка'} для ${row.name}`}
                           value={draft.template === 'amount_list' ? row.amount ?? 0 : row.rate ?? 0}
-                          step={draft.template === 'amount_list'
-                            ? metric.inputConfig?.step ?? MONEY_INPUT_STEP
-                            : MONEY_INPUT_STEP}
                           onChange={(value) => updateRow(
                             row.id,
                             draft.template === 'amount_list' ? { amount: value } : { rate: value },
@@ -710,19 +703,17 @@ function MetricReferencePicker({
 function NumberCell({
   label,
   value,
-  step,
   onChange,
 }: {
   label: string;
   value: number;
-  step: number;
   onChange: (value: number) => void;
 }) {
   return (
     <input
       type="number"
       min={0}
-      step={step}
+      step="any"
       value={Number.isFinite(value) ? value : 0}
       aria-label={label}
       onChange={(event) => {

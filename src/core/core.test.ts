@@ -1,14 +1,18 @@
 import { describe, expect, it } from 'vitest';
 import fixture from './fixtures/tokberi-base-station.json';
 import { computeGraphFocus, computeImpact, computeTokBeriThresholds } from './analysis';
-import { ref } from './ast';
+import { multiply, ref, sum } from './ast';
 import { createBlankModel } from './builder';
 import {
   breakdownChildMetricIds,
   collapsedBreakdownMetricIds,
   convertMetricBreakdownTemplate,
+  hideMetricOnCanvas,
   metricBreakdownInputFromFormula,
   removeMetricBreakdown,
+  showAllMetricsOnCanvas,
+  structuralDescendantMetricIds,
+  synchronizeMetricBreakdownFormulas,
   toggleMetricBreakdown,
   upsertMetricBreakdown,
 } from './breakdowns';
@@ -30,12 +34,13 @@ import {
   loadWorkspace,
   MIGRATION_BACKUP_KEY,
   PREVIOUS_WORKSPACE_STORAGE_KEY,
+  saveWorkspace,
   serializeWorkspace,
   UNIT_UPGRADE_BACKUP_KEY,
   WORKSPACE_STORAGE_KEY,
 } from './storage';
 import { createTokBeriModel } from './tokberi-template';
-import { DAY } from './units';
+import { DAY, ITEM, RUB_PER_ITEM, unitsEqual } from './units';
 
 describe('TokBeri reference model', () => {
   it('matches the trusted station fixture', () => {
@@ -152,6 +157,48 @@ describe('minimal cash-flow starter model', () => {
     expect(validateModelDocument(expanded)).toMatchObject({ ok: true });
   });
 
+  it('saves item quantities and per-item rates without reverting them to people', () => {
+    const source = createCashFlowModel();
+    const withStationCost = upsertMetricBreakdown(source, 'infrastructure_cost', {
+      template: 'quantity_rate',
+      rows: [{
+        id: 'stations',
+        name: 'Станции',
+        comment: '',
+        quantity: 1_650,
+        rate: 100,
+      }],
+    });
+    const stationRow = withStationCost.breakdowns!.infrastructure_cost.rows[0];
+    const quantityId = stationRow.quantityMetricId!;
+    const rateId = stationRow.rateMetricId!;
+    const editedUnits = structuredClone(withStationCost);
+    editedUnits.metrics[quantityId].unit = ITEM;
+    editedUnits.metrics[rateId].unit = RUB_PER_ITEM;
+    const synchronized = synchronizeMetricBreakdownFormulas(editedUnits);
+
+    const synchronizedEvaluation = evaluateModel(synchronized);
+    expect(synchronizedEvaluation.errors).toEqual([]);
+    expect(synchronizedEvaluation.metrics.infrastructure_cost.value).toBeCloseTo(165_000);
+    expect(validateModelDocument(synchronized)).toMatchObject({ ok: true });
+
+    const items = new Map<string, string>();
+    const storage = {
+      get length() { return items.size; },
+      clear: () => items.clear(),
+      getItem: (key: string) => items.get(key) ?? null,
+      key: (index: number) => [...items.keys()][index] ?? null,
+      removeItem: (key: string) => { items.delete(key); },
+      setItem: (key: string, value: string) => { items.set(key, value); },
+    } satisfies Storage;
+
+    expect(saveWorkspace(createWorkspaceDocument(synchronized), storage)).toMatchObject({ value: true });
+    const restored = loadWorkspace(storage).value.model;
+    expect(unitsEqual(restored.metrics[quantityId].unit, ITEM)).toBe(true);
+    expect(unitsEqual(restored.metrics[rateId].unit, RUB_PER_ITEM)).toBe(true);
+    expect(evaluateModel(restored).metrics.infrastructure_cost.value).toBeCloseTo(165_000);
+  });
+
   it('supports a compact list of amounts and can safely return to a manual total', () => {
     const source = createCashFlowModel();
     const withInfrastructureRows = upsertMetricBreakdown(source, 'infrastructure_cost', {
@@ -203,13 +250,14 @@ describe('minimal cash-flow starter model', () => {
     const parentExpandedHidden = collapsedBreakdownMetricIds(parentExpanded);
     expect(parentExpandedHidden.has(cloudMetricId)).toBe(false);
     expect(parentExpandedHidden.has(landMetricId)).toBe(false);
-    expect(cloudChildMetricIds.every((metricId) => parentExpandedHidden.has(metricId))).toBe(true);
+    expect(cloudChildMetricIds.every((metricId) => !parentExpandedHidden.has(metricId))).toBe(true);
 
-    const bothExpanded = toggleMetricBreakdown(parentExpanded, cloudMetricId);
-    const bothExpandedHidden = collapsedBreakdownMetricIds(bothExpanded);
-    expect(cloudChildMetricIds.every((metricId) => !bothExpandedHidden.has(metricId))).toBe(true);
+    expect(parentExpanded.breakdowns?.[cloudMetricId].expanded).toBe(true);
+    const nestedCollapsed = toggleMetricBreakdown(parentExpanded, cloudMetricId);
+    const nestedCollapsedHidden = collapsedBreakdownMetricIds(nestedCollapsed);
+    expect(cloudChildMetricIds.every((metricId) => nestedCollapsedHidden.has(metricId))).toBe(true);
 
-    const parentCollapsedAgain = toggleMetricBreakdown(bothExpanded, 'infrastructure_cost');
+    const parentCollapsedAgain = toggleMetricBreakdown(nestedCollapsed, 'infrastructure_cost');
     const parentCollapsedHidden = collapsedBreakdownMetricIds(parentCollapsedAgain);
     expect(parentCollapsedHidden.has(cloudMetricId)).toBe(true);
     expect(parentCollapsedHidden.has(landMetricId)).toBe(true);
@@ -219,6 +267,7 @@ describe('minimal cash-flow starter model', () => {
     const reopenedHidden = collapsedBreakdownMetricIds(reopenedTree);
     expect(reopenedHidden.has(cloudMetricId)).toBe(false);
     expect(cloudChildMetricIds.every((metricId) => !reopenedHidden.has(metricId))).toBe(true);
+    expect(reopenedTree.breakdowns?.[cloudMetricId].expanded).toBe(true);
 
     const evaluated = evaluateModel(withNestedCloud);
     const parentEdited = upsertMetricBreakdown(
@@ -375,9 +424,169 @@ describe('minimal cash-flow starter model', () => {
     expect(evaluateModel(withTotalCostTable).metrics.total_cost.value).toBeCloseTo(200_993.75);
     expect(validateModelDocument(withTotalCostTable)).toMatchObject({ ok: true });
   });
+
+  it('keeps cross-domain calculation inputs outside a collapsible expense branch', () => {
+    const source = createCashFlowModel();
+    const input = metricBreakdownInputFromFormula(source.metrics.total_cost, source.metrics)!;
+    const withExpenseTree = upsertMetricBreakdown(source, 'total_cost', input);
+    const descendants = structuralDescendantMetricIds(withExpenseTree, 'total_cost');
+
+    expect(descendants.has('transactional_cost')).toBe(true);
+    expect(descendants.has('payment_cost')).toBe(true);
+    expect(descendants.has('total_revenue')).toBe(false);
+
+    const collapsed = collapsedBreakdownMetricIds(withExpenseTree);
+    expect(collapsed.has('transactional_cost')).toBe(true);
+    expect(collapsed.has('payment_cost')).toBe(true);
+    expect(collapsed.has('total_revenue')).toBe(false);
+
+    const expanded = toggleMetricBreakdown(withExpenseTree, 'total_cost');
+    const expandedHidden = collapsedBreakdownMetricIds(expanded);
+    expect(expandedHidden.has('transactional_cost')).toBe(false);
+    expect(expandedHidden.has('payment_cost')).toBe(false);
+    expect(expandedHidden.has('total_revenue')).toBe(false);
+  });
+
+  it('keeps a shared same-domain dependency outside either structural branch', () => {
+    const source = structuredClone(createCashFlowModel());
+    source.metrics.payment_cost_copy = {
+      ...source.metrics.payment_cost,
+      id: 'payment_cost_copy',
+      definitionId: 'payment_cost_copy',
+      name: 'Копия комиссии',
+      alias: 'payment_cost_copy',
+      value: null,
+      valueSource: 'derived',
+      kind: 'derived',
+      knowledgeStatus: 'derived',
+      formula: {
+        source: 'payment_cost',
+        ast: ref('payment_cost'),
+      },
+      position: { x: 0, y: 0 },
+    };
+
+    expect(
+      structuralDescendantMetricIds(source, 'transactional_cost').has('payment_cost'),
+    ).toBe(false);
+    expect(
+      structuralDescendantMetricIds(source, 'payment_cost_copy').has('payment_cost'),
+    ).toBe(false);
+  });
+
+  it('hides a metric subtree manually and restores hidden descendants when their parent opens', () => {
+    const source = createCashFlowModel();
+    const input = metricBreakdownInputFromFormula(source.metrics.total_cost, source.metrics)!;
+    const withExpenseTree = upsertMetricBreakdown(source, 'total_cost', input);
+    const hiddenCommission = hideMetricOnCanvas(withExpenseTree, 'payment_cost');
+
+    expect(hiddenCommission.hiddenMetricIds).toContain('payment_cost');
+    expect(validateModelDocument(hiddenCommission)).toMatchObject({ ok: true });
+
+    const expanded = toggleMetricBreakdown(hiddenCommission, 'total_cost');
+    expect(expanded.hiddenMetricIds).not.toContain('payment_cost');
+    expect(collapsedBreakdownMetricIds(
+      expanded,
+      new Set(expanded.hiddenMetricIds ?? []),
+    ).has('payment_cost')).toBe(false);
+
+    const hiddenBranch = hideMetricOnCanvas(expanded, 'transactional_cost');
+    const hiddenBranchIds = collapsedBreakdownMetricIds(
+      hiddenBranch,
+      new Set(hiddenBranch.hiddenMetricIds ?? []),
+    );
+    expect(hiddenBranchIds.has('transactional_cost')).toBe(true);
+    expect(hiddenBranchIds.has('payment_cost')).toBe(true);
+
+    const restored = showAllMetricsOnCanvas(hiddenBranch);
+    expect(restored.hiddenMetricIds).toEqual([]);
+    expect(collapsedBreakdownMetricIds(restored).has('transactional_cost')).toBe(false);
+  });
+
+  it('collapses and restores an exclusive domainless formula driver with its expense branch', () => {
+    const source = structuredClone(createCashFlowModel());
+    source.metrics.partners_commissions = {
+      ...source.metrics.payment_cost,
+      id: 'partners_commissions',
+      definitionId: 'partners_commissions',
+      name: '% комиссии партнёров',
+      alias: 'partners_commissions',
+      domainIds: [],
+      position: { x: 0, y: 0 },
+    };
+    source.metrics.partners_payments = {
+      ...source.metrics.transactional_cost,
+      id: 'partners_payments',
+      definitionId: 'partners_payments',
+      name: 'Выплаты партнёрам',
+      alias: 'partners_payments',
+      domainIds: ['transactional_costs'],
+      formula: {
+        source: 'partners_commissions * total_revenue',
+        ast: multiply(ref('partners_commissions'), ref('total_revenue')),
+      },
+      position: { x: 0, y: 0 },
+    };
+    source.metrics.total_cost = {
+      ...source.metrics.total_cost,
+      formula: {
+        source: 'transactional_cost + infrastructure_cost + team_cost + partners_payments',
+        ast: sum([
+          ref('transactional_cost'),
+          ref('infrastructure_cost'),
+          ref('team_cost'),
+          ref('partners_payments'),
+        ]),
+      },
+    };
+
+    const input = metricBreakdownInputFromFormula(source.metrics.total_cost, source.metrics)!;
+    const withPartnerBranch = upsertMetricBreakdown(source, 'total_cost', input);
+    const paymentDescendants = structuralDescendantMetricIds(
+      withPartnerBranch,
+      'partners_payments',
+    );
+    const expenseDescendants = structuralDescendantMetricIds(withPartnerBranch, 'total_cost');
+
+    expect(paymentDescendants.has('partners_commissions')).toBe(true);
+    expect(paymentDescendants.has('total_revenue')).toBe(false);
+    expect(expenseDescendants.has('partners_commissions')).toBe(true);
+    expect(expenseDescendants.has('total_revenue')).toBe(false);
+
+    const hiddenPayments = hideMetricOnCanvas(withPartnerBranch, 'partners_payments');
+    expect(hiddenPayments.hiddenMetricIds).toEqual(expect.arrayContaining([
+      'partners_payments',
+      'partners_commissions',
+    ]));
+    expect(hiddenPayments.hiddenMetricIds).not.toContain('total_revenue');
+
+    const hiddenCommission = hideMetricOnCanvas(withPartnerBranch, 'partners_commissions');
+    const expandedExpenses = toggleMetricBreakdown(hiddenCommission, 'total_cost');
+    expect(expandedExpenses.hiddenMetricIds).not.toContain('partners_commissions');
+    expect(collapsedBreakdownMetricIds(
+      expandedExpenses,
+      new Set(expandedExpenses.hiddenMetricIds ?? []),
+    ).has('partners_commissions')).toBe(false);
+    expect(validateModelDocument(expandedExpenses)).toMatchObject({ ok: true });
+  });
 });
 
 describe('schema, AST and DAG safety', () => {
+  it('keeps min and max as real input guardrails while step remains a UI concern', () => {
+    const model = structuredClone(createCashFlowModel());
+    const input = Object.values(model.metrics).find(
+      (metric) => !metric.formula && metric.inputConfig,
+    );
+    expect(input).toBeDefined();
+
+    input!.value = input!.inputConfig!.max * 2 + 1;
+    expect(validateModelDocument(model)).toMatchObject({ ok: false });
+
+    input!.value = input!.inputConfig!.max;
+    input!.inputConfig!.step = 0.001;
+    expect(validateModelDocument(model)).toMatchObject({ ok: true });
+  });
+
   it('rejects a calculation cycle', () => {
     const model = structuredClone(createTokBeriModel());
     model.metrics.cash_contribution.formula = parseFormula('profit_before_tax', model.metrics);

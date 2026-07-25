@@ -18,7 +18,7 @@ describe('metric card geometry', () => {
   it('gives Flow enough height for a wrapped formula', () => {
     expect(getMetricCardSize('flow')).toEqual({
       width: 272,
-      height: 136,
+      height: 156,
       borderRadius: 14,
     });
   });
@@ -26,7 +26,7 @@ describe('metric card geometry', () => {
   it('uses the smallest and roundest card for Rate', () => {
     expect(getMetricCardSize('rate')).toEqual({
       width: 224,
-      height: 88,
+      height: 104,
       borderRadius: 18,
     });
   });
@@ -34,7 +34,7 @@ describe('metric card geometry', () => {
   it('uses a ticket-like intermediate size for One-off', () => {
     expect(getMetricCardSize('one_off')).toEqual({
       width: 248,
-      height: 104,
+      height: 124,
       borderRadius: 14,
     });
   });
@@ -42,17 +42,17 @@ describe('metric card geometry', () => {
   it('places connection ports on all four card faces', () => {
     expect(getMetricCardBounds({ x: 100, y: 40 }, 'rate')).toMatchObject({
       right: 324,
-      bottom: 128,
+      bottom: 144,
       centerX: 212,
-      centerY: 84,
+      centerY: 92,
     });
     expect(getMetricPortPosition({ x: 100, y: 40 }, 'rate', 'left')).toEqual({
       x: 100,
-      y: 84,
+      y: 92,
     });
     expect(getMetricPortPosition({ x: 100, y: 40 }, 'rate', 'right')).toEqual({
       x: 324,
-      y: 84,
+      y: 92,
     });
     expect(getMetricPortPosition({ x: 100, y: 40 }, 'rate', 'top')).toEqual({
       x: 212,
@@ -60,7 +60,7 @@ describe('metric card geometry', () => {
     });
     expect(getMetricPortPosition({ x: 100, y: 40 }, 'rate', 'bottom')).toEqual({
       x: 212,
-      y: 128,
+      y: 144,
     });
   });
 

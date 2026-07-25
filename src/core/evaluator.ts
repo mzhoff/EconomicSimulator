@@ -289,7 +289,9 @@ export function validateFormula(metric: MetricDef, metrics: Record<string, Metri
         `Формула возвращает ${describeUnit(inferred.unit)}, но метрика объявлена как ${describeUnit(metric.unit)}.`,
       ];
     }
-    if (inferred.behavior !== metric.behavior) {
+    const behaviorIsDefinedByBreakdown = metric.provenance.source === 'EconomicSimulator Metric Breakdown'
+      && metric.provenance.version === 'breakdown-v1';
+    if (inferred.behavior !== metric.behavior && !behaviorIsDefinedByBreakdown) {
       return [
         `Формула описывает ${inferred.behavior}, но метрика объявлена как ${metric.behavior}.`,
       ];

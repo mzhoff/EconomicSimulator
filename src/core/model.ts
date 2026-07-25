@@ -203,6 +203,7 @@ export interface ModelState {
   domains: Record<string, DomainDef>;
   visualGroups: Record<string, VisualGroupDef>;
   breakdowns?: Record<string, MetricBreakdownDef>;
+  hiddenMetricIds?: string[];
   scenarios: Record<string, Scenario>;
   influenceRelations: InfluenceRelation[];
 }

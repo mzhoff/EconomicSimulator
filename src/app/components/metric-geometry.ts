@@ -29,17 +29,17 @@ const METRIC_CARD_SIZES: Record<BuilderMetricBehavior, MetricCardSize> = {
   },
   flow: {
     width: 272,
-    height: 136,
+    height: 156,
     borderRadius: 14,
   },
   rate: {
     width: 224,
-    height: 88,
+    height: 104,
     borderRadius: 18,
   },
   one_off: {
     width: 248,
-    height: 104,
+    height: 124,
     borderRadius: 14,
   },
 };

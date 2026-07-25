@@ -192,6 +192,26 @@ export function divideUnits(left: UnitSpec, right: UnitSpec): UnitSpec {
   return { symbol: symbolFromDimensions(normalized), dimensions: normalized };
 }
 
+export type QuantityRateTimeBasis = 'direct' | 'month';
+
+/**
+ * Returns the time factor needed for `quantity × rate` to produce the result.
+ * A rate may already describe the complete result per item (`₽/шт.`), or it
+ * may be monthly (`₽/чел./мес.`), in which case one model month closes the
+ * dimensions used by the current monthly snapshot.
+ */
+export function quantityRateTimeBasis(
+  resultUnit: UnitSpec,
+  quantityUnit: UnitSpec,
+  rateUnit: UnitSpec,
+): QuantityRateTimeBasis | null {
+  const directProduct = multiplyUnits(quantityUnit, rateUnit);
+  if (unitsEqual(directProduct, resultUnit)) return 'direct';
+  return unitsEqual(multiplyUnits(directProduct, MONTH), resultUnit)
+    ? 'month'
+    : null;
+}
+
 export function isDimensionless(unit: UnitSpec): boolean {
   return Object.keys(normalizedDimensions(unit.dimensions)).length === 0;
 }

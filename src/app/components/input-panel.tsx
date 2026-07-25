@@ -27,7 +27,9 @@ interface InputPanelProps {
   overriddenIds: Set<string>;
   selectedId: string;
   onSelect: (id: string) => void;
+  onBeginInputChange: (id: string) => void;
   onChangeInput: (id: string, value: number) => void;
+  onEndInputChange: (id: string) => void;
   onReset: (id: string) => void;
   collapsed: boolean;
   onToggle: () => void;
@@ -62,17 +64,18 @@ function metricDomainIds(metric: DomainMetric): readonly string[] {
 
 function controls(metric: DomainMetric): { value: number; min: number; max: number; step: number; factor: number } {
   const value = metric.value ?? 0;
-  const config = metric.inputConfig ?? {
-    min: Math.min(0, value),
-    max: Math.max(Math.abs(value) * 3, 1),
-    step: Math.max(Math.abs(value) / 100, 0.01),
-  };
+  const fallbackMin = Math.min(0, value);
+  const fallbackMax = Math.max(Math.abs(value) * 3, 1);
+  const min = Math.min(metric.inputConfig?.min ?? fallbackMin, value);
+  const max = Math.max(metric.inputConfig?.max ?? fallbackMax, value);
+  const step = metric.inputConfig?.step
+    ?? Math.max(Math.abs(max - min) / 100, Math.abs(value) / 100, 0.01);
   const factor = metric.unit.symbol === '%' ? 100 : 1;
   return {
     value: value * factor,
-    min: config.min * factor,
-    max: config.max * factor,
-    step: config.step * factor,
+    min: min * factor,
+    max: max * factor,
+    step: step * factor,
     factor,
   };
 }
@@ -140,7 +143,9 @@ interface MetricInputCardProps {
   selected: boolean;
   changed: boolean;
   onSelect: (id: string) => void;
+  onBeginInputChange: (id: string) => void;
   onChangeInput: (id: string, value: number) => void;
+  onEndInputChange: (id: string) => void;
   onReset: (id: string) => void;
 }
 
@@ -149,7 +154,9 @@ const MetricInputCard = memo(function MetricInputCard({
   selected,
   changed,
   onSelect,
+  onBeginInputChange,
   onChangeInput,
+  onEndInputChange,
   onReset,
 }: MetricInputCardProps) {
   const control = controls(metric);
@@ -194,11 +201,19 @@ const MetricInputCard = memo(function MetricInputCard({
       <input
         aria-label={metric.name}
         type="range"
+        data-model-history-input="true"
         min={control.min}
         max={control.max}
         step={control.step}
         value={control.value}
+        onFocus={() => onBeginInputChange(metric.id)}
+        onPointerDown={() => onBeginInputChange(metric.id)}
+        onKeyDown={() => onBeginInputChange(metric.id)}
         onChange={(event) => onChangeInput(metric.id, Number(event.target.value) / control.factor)}
+        onPointerUp={() => onEndInputChange(metric.id)}
+        onPointerCancel={() => onEndInputChange(metric.id)}
+        onKeyUp={() => onEndInputChange(metric.id)}
+        onBlur={() => onEndInputChange(metric.id)}
         className="h-[0.25rem] w-full cursor-pointer accent-[var(--primary)]"
         onClick={(event) => event.stopPropagation()}
       />
@@ -209,11 +224,13 @@ const MetricInputCard = memo(function MetricInputCard({
         <div className="flex items-center gap-[0.25rem]">
           <input
             type="number"
-            min={control.min}
-            max={control.max}
-            step={control.step}
+            step="any"
             value={Number(control.value.toFixed(4))}
+            onFocus={() => onBeginInputChange(metric.id)}
+            onPointerDown={() => onBeginInputChange(metric.id)}
+            onKeyDown={() => onBeginInputChange(metric.id)}
             onChange={(event) => onChangeInput(metric.id, Number(event.target.value) / control.factor)}
+            onBlur={() => onEndInputChange(metric.id)}
             onClick={(event) => event.stopPropagation()}
             className="w-[4.75rem] rounded-[var(--radius-sm)] border border-border bg-background px-[0.375rem] py-[0.125rem] text-right text-[0.6875rem] outline-none focus:border-primary"
           />
@@ -262,7 +279,9 @@ export function InputPanel({
   overriddenIds,
   selectedId,
   onSelect,
+  onBeginInputChange,
   onChangeInput,
+  onEndInputChange,
   onReset,
   collapsed,
   onToggle,
@@ -341,7 +360,9 @@ export function InputPanel({
                         selected={selectedId === metric.id}
                         changed={overriddenIds.has(metric.id)}
                         onSelect={onSelect}
+                        onBeginInputChange={onBeginInputChange}
                         onChangeInput={onChangeInput}
+                        onEndInputChange={onEndInputChange}
                         onReset={onReset}
                       />
                     ))}
@@ -373,7 +394,9 @@ export function InputPanel({
                       selected={selectedId === metric.id}
                       changed={overriddenIds.has(metric.id)}
                       onSelect={onSelect}
+                      onBeginInputChange={onBeginInputChange}
                       onChangeInput={onChangeInput}
+                      onEndInputChange={onEndInputChange}
                       onReset={onReset}
                     />
                   ))}

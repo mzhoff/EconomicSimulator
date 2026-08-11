@@ -91,6 +91,16 @@ export function preserveModelPresentation(
         : group,
     ]),
   );
+  const executableFrames = target.executableFrames
+    ? Object.fromEntries(
+        Object.entries(target.executableFrames).map(([id, frame]) => [
+          id,
+          current.executableFrames?.[id]
+            ? { ...frame, collapsed: current.executableFrames[id].collapsed }
+            : frame,
+        ]),
+      )
+    : undefined;
   const breakdowns = target.breakdowns
     ? Object.fromEntries(
         Object.entries(target.breakdowns).map(([id, breakdown]) => [
@@ -108,6 +118,7 @@ export function preserveModelPresentation(
     ...target,
     domains,
     visualGroups,
+    executableFrames,
     breakdowns,
     hiddenMetricIds,
   };

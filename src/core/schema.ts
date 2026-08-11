@@ -260,6 +260,111 @@ function validateModelShape(value: unknown, path: string, issues: ValidationIssu
     }
   }
 
+  if (value.executableFrames !== undefined) {
+    if (!isRecord(value.executableFrames)) {
+      issues.push({ path: `${path}.executableFrames`, message: 'Исполняемые фреймы должны быть объектом.' });
+    } else {
+      for (const [id, rawFrame] of Object.entries(value.executableFrames)) {
+        const framePath = `${path}.executableFrames.${id}`;
+        if (!isRecord(rawFrame)) {
+          issues.push({ path: framePath, message: 'Исполняемый фрейм должен быть объектом.' });
+          continue;
+        }
+        for (const key of ['id', 'name', 'color']) requireString(rawFrame, key, framePath, issues);
+        requireText(rawFrame, 'description', framePath, issues);
+        if (rawFrame.id !== id) {
+          issues.push({ path: `${framePath}.id`, message: 'Ключ фрейма и id должны совпадать.' });
+        }
+        if (
+          !Array.isArray(rawFrame.metricIds)
+          || rawFrame.metricIds.some((metricId) => typeof metricId !== 'string' || !metricId)
+        ) {
+          issues.push({ path: `${framePath}.metricIds`, message: 'metricIds должен быть массивом непустых id метрик.' });
+        } else if (new Set(rawFrame.metricIds).size !== rawFrame.metricIds.length) {
+          issues.push({ path: `${framePath}.metricIds`, message: 'Метрика не должна повторяться внутри фрейма.' });
+        }
+        if (typeof rawFrame.collapsed !== 'boolean') {
+          issues.push({ path: `${framePath}.collapsed`, message: 'collapsed должен быть boolean.' });
+        }
+        if (!isRecord(rawFrame.execution)) {
+          issues.push({ path: `${framePath}.execution`, message: 'У фрейма должен быть режим выполнения.' });
+          continue;
+        }
+        const executionPath = `${framePath}.execution`;
+        if (rawFrame.execution.mode === 'monthly_snapshot') {
+          requireString(rawFrame.execution, 'outputMetricId', executionPath, issues);
+          continue;
+        }
+        if (rawFrame.execution.mode === 'monthly_timeline') {
+          const timelineExecution = rawFrame.execution;
+          requireString(rawFrame.execution, 'sourceFrameId', executionPath, issues);
+          requireString(rawFrame.execution, 'sourceMetricId', executionPath, issues);
+          if (
+            !Number.isInteger(rawFrame.execution.horizonMonths)
+            || Number(rawFrame.execution.horizonMonths) < 1
+            || Number(rawFrame.execution.horizonMonths) > 600
+          ) {
+            issues.push({
+              path: `${executionPath}.horizonMonths`,
+              message: 'Горизонт Timeline должен быть целым числом от 1 до 600.',
+            });
+          }
+          if (!isRecord(rawFrame.execution.stockMetricIds)) {
+            issues.push({
+              path: `${executionPath}.stockMetricIds`,
+              message: 'Timeline должен ссылаться на три накопителя.',
+            });
+          } else {
+            for (const key of ['cumulativeCapex', 'cumulativeOperatingCashFlow', 'projectCashPosition']) {
+              requireString(rawFrame.execution.stockMetricIds, key, `${executionPath}.stockMetricIds`, issues);
+            }
+          }
+          if (!Array.isArray(timelineExecution.investments)) {
+            issues.push({ path: `${executionPath}.investments`, message: 'План вложений должен быть массивом.' });
+          } else {
+            const investmentIds = new Set<string>();
+            timelineExecution.investments.forEach((investment, index) => {
+              const investmentPath = `${executionPath}.investments.${index}`;
+              if (!isRecord(investment)) {
+                issues.push({ path: investmentPath, message: 'Плановое вложение должно быть объектом.' });
+                return;
+              }
+              for (const key of ['id', 'name']) requireString(investment, key, investmentPath, issues);
+              requireText(investment, 'comment', investmentPath, issues);
+              if (typeof investment.id === 'string') {
+                if (investmentIds.has(investment.id)) {
+                  issues.push({ path: `${investmentPath}.id`, message: 'ID планового вложения не должен повторяться.' });
+                }
+                investmentIds.add(investment.id);
+              }
+              if (
+                !Number.isInteger(investment.monthIndex)
+                || Number(investment.monthIndex) < 0
+                || (
+                  Number.isInteger(timelineExecution.horizonMonths)
+                  && Number(investment.monthIndex) >= Number(timelineExecution.horizonMonths)
+                )
+              ) {
+                issues.push({
+                  path: `${investmentPath}.monthIndex`,
+                  message: 'Месяц вложения должен находиться внутри горизонта Timeline.',
+                });
+              }
+              if (!isFiniteNumber(investment.amount) || investment.amount < 0) {
+                issues.push({
+                  path: `${investmentPath}.amount`,
+                  message: 'Сумма вложения должна быть конечным неотрицательным числом.',
+                });
+              }
+            });
+          }
+          continue;
+        }
+        issues.push({ path: `${executionPath}.mode`, message: 'Неизвестный режим исполняемого фрейма.' });
+      }
+    }
+  }
+
   if (value.hiddenMetricIds !== undefined) {
     if (!Array.isArray(value.hiddenMetricIds) || value.hiddenMetricIds.some((metricId) => typeof metricId !== 'string')) {
       issues.push({ path: `${path}.hiddenMetricIds`, message: 'hiddenMetricIds должен быть массивом строк.' });
@@ -427,6 +532,89 @@ function validateModelSemantics(model: ModelState, issues: ValidationIssue[]): v
     for (const metricId of group.metricIds) {
       if (!model.metrics[metricId]) {
         issues.push({ path: `model.visualGroups.${group.id}.metricIds`, message: `Метрика «${metricId}» не существует.` });
+      }
+    }
+  }
+  for (const frame of Object.values(model.executableFrames ?? {})) {
+    for (const metricId of frame.metricIds) {
+      if (!model.metrics[metricId]) {
+        issues.push({
+          path: `model.executableFrames.${frame.id}.metricIds`,
+          message: `Метрика «${metricId}» не существует.`,
+        });
+      }
+    }
+    if (frame.execution.mode === 'monthly_snapshot') {
+      const output = model.metrics[frame.execution.outputMetricId];
+      if (!output) {
+        issues.push({
+          path: `model.executableFrames.${frame.id}.execution.outputMetricId`,
+          message: 'Выходная метрика Snapshot не существует.',
+        });
+      } else if (!frame.metricIds.includes(output.id)) {
+        issues.push({
+          path: `model.executableFrames.${frame.id}.metricIds`,
+          message: 'Выходная метрика Snapshot должна находиться внутри своего фрейма.',
+        });
+      }
+      continue;
+    }
+    const sourceFrame = model.executableFrames?.[frame.execution.sourceFrameId];
+    if (!sourceFrame || sourceFrame.execution.mode !== 'monthly_snapshot') {
+      issues.push({
+        path: `model.executableFrames.${frame.id}.execution.sourceFrameId`,
+        message: 'Timeline должен ссылаться на существующий месячный Snapshot.',
+      });
+    }
+    const sourceMetric = model.metrics[frame.execution.sourceMetricId];
+    if (!sourceMetric) {
+      issues.push({
+        path: `model.executableFrames.${frame.id}.execution.sourceMetricId`,
+        message: 'Источник денежного потока Timeline не существует.',
+      });
+    } else {
+      if (sourceMetric.behavior !== 'flow') {
+        issues.push({
+          path: `model.executableFrames.${frame.id}.execution.sourceMetricId`,
+          message: 'Источник Timeline должен быть Flow-метрикой.',
+        });
+      }
+      if (sourceMetric.grain.time !== 'month') {
+        issues.push({
+          path: `model.executableFrames.${frame.id}.execution.sourceMetricId`,
+          message: 'Источник Timeline должен иметь месячную гранулярность.',
+        });
+      }
+      if (!Object.keys(sourceMetric.unit.dimensions).some((dimension) => dimension.startsWith('currency:'))) {
+        issues.push({
+          path: `model.executableFrames.${frame.id}.execution.sourceMetricId`,
+          message: 'Источник модели окупаемости должен быть денежной метрикой.',
+        });
+      }
+      if (sourceFrame && !sourceFrame.metricIds.includes(sourceMetric.id)) {
+        issues.push({
+          path: `model.executableFrames.${frame.id}.execution.sourceMetricId`,
+          message: 'Источник Timeline должен находиться внутри исходного Snapshot.',
+        });
+      }
+    }
+    for (const metricId of Object.values(frame.execution.stockMetricIds)) {
+      const stock = model.metrics[metricId];
+      if (!stock) {
+        issues.push({
+          path: `model.executableFrames.${frame.id}.execution.stockMetricIds`,
+          message: `Накопитель «${metricId}» не существует.`,
+        });
+      } else if (stock.behavior !== 'stock') {
+        issues.push({
+          path: `model.executableFrames.${frame.id}.execution.stockMetricIds`,
+          message: `Результат Timeline «${stock.name}» должен быть Stock-метрикой.`,
+        });
+      } else if (!frame.metricIds.includes(metricId)) {
+        issues.push({
+          path: `model.executableFrames.${frame.id}.metricIds`,
+          message: `Накопитель «${stock.name}» должен находиться внутри Timeline.`,
+        });
       }
     }
   }

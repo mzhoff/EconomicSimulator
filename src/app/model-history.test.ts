@@ -102,6 +102,13 @@ describe('model history', () => {
         ...current.visualGroups,
         example: { ...current.visualGroups.example, collapsed: true },
       },
+      executableFrames: {
+        ...current.executableFrames,
+        'frame-monthly-snapshot': {
+          ...current.executableFrames!['frame-monthly-snapshot'],
+          collapsed: true,
+        },
+      },
       breakdowns: {
         ...current.breakdowns,
         payroll_cost: { ...current.breakdowns!.payroll_cost, expanded: false },
@@ -116,6 +123,9 @@ describe('model history', () => {
     );
     expect(undone.present.model.domains.revenue.collapsed).toBe(true);
     expect(undone.present.model.visualGroups.example.collapsed).toBe(true);
+    expect(
+      undone.present.model.executableFrames?.['frame-monthly-snapshot'].collapsed,
+    ).toBe(true);
     expect(undone.present.model.breakdowns?.payroll_cost.expanded).toBe(false);
     expect(undone.present.model.hiddenMetricIds).toEqual(['total_rents']);
   });

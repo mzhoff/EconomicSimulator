@@ -18,6 +18,7 @@ export function createBlankModel(name = 'Новая модель'): ModelState {
     metrics: {},
     domains: {},
     visualGroups: {},
+    executableFrames: {},
     breakdowns: {},
     hiddenMetricIds: [],
     scenarios: {

@@ -1,4 +1,5 @@
 import { extractDependencies, literal, multiply, ref, sum } from './ast';
+import { synchronizeExecutableFrameMetricIds } from './executable-frames';
 import { formatFormulaAst } from './formula-parser';
 import type {
   MetricBreakdownDef,
@@ -770,7 +771,7 @@ export function upsertMetricBreakdown(
     }),
   );
 
-  return {
+  return synchronizeExecutableFrameMetricIds({
     ...model,
     metrics,
     domains: syncDomains(metrics, model.domains),
@@ -779,7 +780,7 @@ export function upsertMetricBreakdown(
       ...(model.breakdowns ?? {}),
       [resultMetricId]: breakdown,
     },
-  };
+  });
 }
 
 export function toggleMetricBreakdown(model: ModelState, resultMetricId: string): ModelState {
@@ -847,7 +848,7 @@ export function removeMetricBreakdown(
     },
   };
   model = { ...model, metrics, breakdowns, domains: syncDomains(metrics, model.domains) };
-  return model;
+  return synchronizeExecutableFrameMetricIds(model);
 }
 
 export function upgradeCashFlowPayrollBreakdown(

@@ -79,13 +79,13 @@ cash_contribution
 
 profit_before_tax
   = cash_contribution
-  - station_depreciation
 
 payback_months
   = capex / positive_cash_contribution
 ```
 
-CAPEX не вычитается повторно через амортизацию при расчёте окупаемости.
+Амортизация и бухгалтерские корректировки в этой фазе намеренно не считаются.
+CAPEX учитывается целиком в модели вложений и окупаемости.
 
 ### Выручка
 
@@ -193,7 +193,6 @@ battery_wear_cost
 - SIM;
 - обслуживание;
 - прочие расходы станции;
-- амортизация.
 
 ### CAPEX
 

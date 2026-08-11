@@ -27,8 +27,7 @@
     "delivery_cost": 3000,
     "installation_cost": 3000,
     "sim_cost": 100,
-    "maintenance_cost": 500,
-    "station_life_months": 36
+    "maintenance_cost": 500
   },
   "expected": {
     "successful_rentals": 45,
@@ -40,8 +39,7 @@
     "battery_wear_cost": 90,
     "total_capex": 14800,
     "cash_contribution": 7257.225,
-    "station_depreciation": 411.1111111111,
-    "profit_before_tax": 6846.1138888889,
+    "profit_before_tax": 7257.225,
     "payback_months": 2.0393469956
   }
 }

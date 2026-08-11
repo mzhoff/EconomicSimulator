@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import {
+  CalendarRange,
   Eye,
   Focus,
   FolderTree,
@@ -28,6 +29,8 @@ interface BottomToolbarProps {
   onFitToView: () => void;
   onAutoLayout: () => void;
   onAddMetric: () => void;
+  onOpenMonthlyTimeline?: () => void;
+  monthlyTimelineExists?: boolean;
   onUndo: () => void;
   onRedo: () => void;
   canUndo: boolean;
@@ -52,6 +55,8 @@ export function BottomToolbar({
   onFitToView,
   onAutoLayout,
   onAddMetric,
+  onOpenMonthlyTimeline,
+  monthlyTimelineExists = false,
   onUndo,
   onRedo,
   canUndo,
@@ -74,6 +79,13 @@ export function BottomToolbar({
       onPointerDown={(event) => event.stopPropagation()}
     >
       <ToolBtn icon={<Plus />} tooltip="Добавить метрику" onClick={onAddMetric} highlight />
+      <ToolBtn
+        icon={<CalendarRange />}
+        tooltip={monthlyTimelineExists ? 'Открыть модель окупаемости' : 'Добавить помесячную модель окупаемости'}
+        onClick={onOpenMonthlyTimeline}
+        active={monthlyTimelineExists}
+        disabled={!onOpenMonthlyTimeline}
+      />
       <Divider />
       <ToolBtn icon={<MousePointer2 />} tooltip="Выделение: клик, Shift и рамка" active />
       <ToolBtn icon={<Hand />} tooltip="Панорамирование: средняя кнопка или колесо" />

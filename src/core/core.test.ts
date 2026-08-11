@@ -767,15 +767,11 @@ describe('universal builder schema v2', () => {
     );
 
     expect(relation('cash_contribution', 'profit_before_tax')).toMatchObject({
-      operation: 'add',
+      operation: 'direct',
       direction: 'positive',
       sign: 1,
     });
-    expect(relation('station_depreciation', 'profit_before_tax')).toMatchObject({
-      operation: 'subtract',
-      direction: 'negative',
-      sign: -1,
-    });
+    expect(model.metrics.station_depreciation).toBeUndefined();
     expect(relation('successful_rentals', 'rental_revenue')).toMatchObject({
       operation: 'multiply',
       direction: 'positive',

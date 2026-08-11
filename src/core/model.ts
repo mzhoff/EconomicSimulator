@@ -171,6 +171,54 @@ export interface VisualGroupDef {
   collapsed: boolean;
 }
 
+export type ExecutableFrameMode = 'monthly_snapshot' | 'monthly_timeline';
+
+export interface PlannedInvestmentDef {
+  id: string;
+  name: string;
+  monthIndex: number;
+  amount: number;
+  comment: string;
+}
+
+export interface MonthlySnapshotExecutionDef {
+  mode: 'monthly_snapshot';
+  outputMetricId: string;
+}
+
+export interface MonthlyTimelineStockMetricIds {
+  cumulativeCapex: string;
+  cumulativeOperatingCashFlow: string;
+  projectCashPosition: string;
+}
+
+export interface MonthlyTimelineExecutionDef {
+  mode: 'monthly_timeline';
+  sourceFrameId: string;
+  sourceMetricId: string;
+  horizonMonths: number;
+  investments: PlannedInvestmentDef[];
+  stockMetricIds: MonthlyTimelineStockMetricIds;
+}
+
+export type ExecutableFrameExecutionDef =
+  | MonthlySnapshotExecutionDef
+  | MonthlyTimelineExecutionDef;
+
+/**
+ * An executable frame is a semantic model boundary. Unlike a VisualGroup it
+ * tells the runtime how the metrics inside the frame are evaluated.
+ */
+export interface ExecutableFrameDef {
+  id: string;
+  name: string;
+  description: string;
+  color: string;
+  metricIds: string[];
+  collapsed: boolean;
+  execution: ExecutableFrameExecutionDef;
+}
+
 export type MetricBreakdownTemplate = 'amount_list' | 'quantity_rate';
 
 export interface MetricBreakdownRowDef {
@@ -202,6 +250,7 @@ export interface ModelState {
   metrics: Record<string, MetricDef>;
   domains: Record<string, DomainDef>;
   visualGroups: Record<string, VisualGroupDef>;
+  executableFrames?: Record<string, ExecutableFrameDef>;
   breakdowns?: Record<string, MetricBreakdownDef>;
   hiddenMetricIds?: string[];
   scenarios: Record<string, Scenario>;

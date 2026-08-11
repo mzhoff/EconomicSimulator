@@ -290,7 +290,9 @@ export function InputPanel({
   onManageDomain,
 }: InputPanelProps) {
   const inputs = useMemo(
-    () => Object.values(metrics).filter((metric) => !metric.formula),
+    () => Object.values(metrics).filter((metric) => (
+      !metric.formula && metric.valueSource === 'input'
+    )),
     [metrics],
   );
   const { sections, unassigned } = useMemo(

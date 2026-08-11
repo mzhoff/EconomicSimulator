@@ -7,7 +7,12 @@ export function behaviorLabel(behavior: MetricBehavior): string {
 }
 
 export function autoLayout(model: ModelState): Record<string, { x: number; y: number }> {
-  const ids = Object.keys(model.metrics);
+  const runtimeMetricIds = new Set(
+    Object.values(model.executableFrames ?? {})
+      .filter((frame) => frame.execution.mode === 'monthly_timeline')
+      .flatMap((frame) => frame.metricIds),
+  );
+  const ids = Object.keys(model.metrics).filter((id) => !runtimeMetricIds.has(id));
   const parents = new Map<string, string[]>();
   for (const relation of getCalculationRelations(model)) {
     const list = parents.get(relation.to) ?? [];
@@ -39,6 +44,9 @@ export function autoLayout(model: ModelState): Record<string, { x: number; y: nu
   }
 
   const positions: Record<string, { x: number; y: number }> = {};
+  runtimeMetricIds.forEach((id) => {
+    if (model.metrics[id]) positions[id] = model.metrics[id].position;
+  });
   for (const [level, levelIds] of [...byLevel.entries()].sort(([left], [right]) => left - right)) {
     let nextY = 70;
     levelIds

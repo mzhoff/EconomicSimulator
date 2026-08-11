@@ -1,5 +1,6 @@
 import { add, multiply, ref, subtract, sum } from './ast';
 import { upsertMetricBreakdown } from './breakdowns';
+import { synchronizeExecutableFrameMetricIds } from './executable-frames';
 import { MODEL_SCHEMA_VERSION } from './model';
 import type {
   DomainDef,
@@ -302,6 +303,20 @@ export function createCashFlowModel(): ModelState {
     metrics,
     domains: domainsFromMetrics(metrics),
     visualGroups: {},
+    executableFrames: {
+      'frame-monthly-snapshot': {
+        id: 'frame-monthly-snapshot',
+        name: 'Денежный поток',
+        description: 'Один расчётный срез модели за месяц.',
+        color: '#64748b',
+        metricIds: Object.keys(metrics),
+        collapsed: false,
+        execution: {
+          mode: 'monthly_snapshot',
+          outputMetricId: 'profit',
+        },
+      },
+    },
     breakdowns: {},
     hiddenMetricIds: [],
     scenarios: {
@@ -315,23 +330,25 @@ export function createCashFlowModel(): ModelState {
     influenceRelations: [],
   };
 
-  return upsertMetricBreakdown(model, 'payroll_cost', {
-    template: 'quantity_rate',
-    rows: [
-      {
-        id: 'frontend',
-        name: 'Frontend-разработчик',
-        comment: '',
-        quantity: 1,
-        rate: 100_000,
-      },
-      {
-        id: 'backend',
-        name: 'Backend-разработчик',
-        comment: '',
-        quantity: 1,
-        rate: 100_000,
-      },
-    ],
-  });
+  return synchronizeExecutableFrameMetricIds(
+    upsertMetricBreakdown(model, 'payroll_cost', {
+      template: 'quantity_rate',
+      rows: [
+        {
+          id: 'frontend',
+          name: 'Frontend-разработчик',
+          comment: '',
+          quantity: 1,
+          rate: 100_000,
+        },
+        {
+          id: 'backend',
+          name: 'Backend-разработчик',
+          comment: '',
+          quantity: 1,
+          rate: 100_000,
+        },
+      ],
+    }),
+  );
 }

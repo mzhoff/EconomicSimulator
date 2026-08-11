@@ -706,20 +706,6 @@ export function createTokBeriModel(): ModelState {
       { min: 0, max: 100000, step: 500 },
       { grain: stationSnapshot },
     ),
-    input(
-      'station_life_months',
-      'Срок амортизации',
-      'Срок линейной амортизации станции в месяцах.',
-      'stock',
-      MONTH,
-      36,
-      'capex',
-      'input',
-      { x: 780, y: 1970 },
-      { min: 1, max: 120, step: 1, integer: true },
-      { grain: stationSnapshot },
-    ),
-
     metric({
       id: 'battery_capex',
       name: 'CAPEX батарей',
@@ -752,20 +738,6 @@ export function createTokBeriModel(): ModelState {
       domain: 'capex',
       role: 'output',
       position: { x: 1500, y: 1430 },
-    }),
-    metric({
-      id: 'station_depreciation',
-      name: 'Амортизация за месяц',
-      description: 'Линейная амортизация CAPEX; не используется для расчёта payback.',
-      behavior: 'flow',
-      unit: RUB,
-      formula: formula(
-        'total_capex / station_life_months × 1 month',
-        multiply(divide(ref('total_capex'), ref('station_life_months')), literal(1, MONTH)),
-      ),
-      domain: 'fixed_costs',
-      role: 'intermediate',
-      position: { x: 1860, y: 1430 },
     }),
     metric({
       id: 'total_cash_inflow',
@@ -807,10 +779,10 @@ export function createTokBeriModel(): ModelState {
     metric({
       id: 'profit_before_tax',
       name: 'Прибыль до налогов',
-      description: 'Денежный вклад минус амортизация. Налоговая схема пока не задана.',
+      description: 'Равна денежному вкладу; бухгалтерские корректировки и налоги пока не учитываются.',
       behavior: 'flow',
       unit: RUB,
-      formula: formula('cash_contribution − station_depreciation', subtract(ref('cash_contribution'), ref('station_depreciation'))),
+      formula: formula('cash_contribution', ref('cash_contribution')),
       domain: 'results',
       role: 'north_star',
       position: { x: 2220, y: 360 },
@@ -818,7 +790,7 @@ export function createTokBeriModel(): ModelState {
     metric({
       id: 'payback_months',
       name: 'Срок окупаемости',
-      description: 'CAPEX / положительный денежный вклад; амортизация не вычитается второй раз.',
+      description: 'CAPEX / положительный денежный вклад.',
       behavior: 'rate',
       unit: MONTH,
       formula: formula(

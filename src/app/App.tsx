@@ -1,4 +1,6 @@
 import {
+  lazy,
+  Suspense,
   useCallback,
   useEffect,
   useMemo,
@@ -40,6 +42,7 @@ import {
   upsertMetricBreakdown,
   type DomainDef,
   type Edge,
+  type ExecutableFrameDef,
   type MetricDef,
   type MetricBreakdownInput,
   type ModelState,
@@ -85,6 +88,16 @@ import {
 } from './model-library';
 import { createBlankModel } from '../core/builder';
 import {
+  addMetricIdsToSnapshotFrame,
+  ensureMonthlyTimelineFrame,
+  synchronizeExecutableFrameMetricIds,
+  updateMonthlyTimelineFrame,
+} from '../core/executable-frames';
+import {
+  runMonthlyTimeline,
+  type MonthlyTimelineRunResult,
+} from '../core/monthly-timeline';
+import {
   getMetricCardBounds,
   getMetricCardSize,
   getMetricPortPosition,
@@ -96,6 +109,7 @@ import {
   type EdgeLineStyle,
 } from './components/edge-routing';
 import { VisualGroupFrame } from './components/visual-group-frame';
+import { ExecutableFrame } from './components/executable-frame';
 import {
   VisualGroupDialog,
   type VisualGroupDraft,
@@ -121,6 +135,10 @@ const CANVAS_MENU_WIDTH = 208;
 const CANVAS_MENU_HEIGHT = 84;
 const CANVAS_MENU_EDGE_GAP = 8;
 const EDGE_LINE_STYLE_STORAGE_KEY = 'economic-simulator:edge-line-style:v1';
+const MonthlyTimelineDialog = lazy(() => (
+  import('./components/monthly-timeline-dialog')
+    .then((module) => ({ default: module.MonthlyTimelineDialog }))
+));
 
 interface SelectionRect {
   start: CanvasPoint;
@@ -170,6 +188,73 @@ interface ConnectionDraft {
 interface VisualGroupEditorState {
   mode: 'create' | 'edit';
   groupId?: string;
+}
+
+function monthlyTimelineResults(
+  model: ModelState,
+  metrics: Record<string, MetricDef>,
+): Record<string, MonthlyTimelineRunResult> {
+  return Object.fromEntries(
+    Object.values(model.executableFrames ?? {})
+      .flatMap((frame) => {
+        if (frame.execution.mode !== 'monthly_timeline') return [];
+        const execution = frame.execution;
+        const sourceValue = metrics[execution.sourceMetricId]?.value ?? 0;
+        return [[
+          frame.id,
+          runMonthlyTimeline({
+            horizonMonths: execution.horizonMonths,
+            operatingCashFlow: Number.isFinite(sourceValue) ? sourceValue : 0,
+            investments: execution.investments,
+          }),
+        ] as const];
+      }),
+  );
+}
+
+function withMonthlyTimelineValues(
+  model: ModelState,
+  metrics: Record<string, MetricDef>,
+  results: Record<string, MonthlyTimelineRunResult>,
+): Record<string, MetricDef> {
+  const next = { ...metrics };
+  for (const frame of Object.values(model.executableFrames ?? {})) {
+    if (frame.execution.mode !== 'monthly_timeline') continue;
+    const lastPoint = results[frame.id]?.points.at(-1);
+    if (!lastPoint) continue;
+    const valuesByMetricId: Record<string, number> = {
+      [frame.execution.stockMetricIds.cumulativeCapex]: lastPoint.cumulativeCapex,
+      [frame.execution.stockMetricIds.cumulativeOperatingCashFlow]: lastPoint.cumulativeOperatingCashFlow,
+      [frame.execution.stockMetricIds.projectCashPosition]: lastPoint.projectCashPosition,
+    };
+    for (const [metricId, value] of Object.entries(valuesByMetricId)) {
+      if (next[metricId]) next[metricId] = { ...next[metricId], value };
+    }
+  }
+  return next;
+}
+
+function timelineSourceMetricId(
+  model: ModelState,
+  selectedIds: readonly string[],
+): string | null {
+  const isMonetaryFlow = (metric: MetricDef | undefined) => Boolean(
+    metric?.behavior === 'flow'
+    && Object.keys(metric.unit.dimensions).some((dimension) => dimension.startsWith('currency:')),
+  );
+  const selected = [...selectedIds]
+    .reverse()
+    .map((id) => model.metrics[id])
+    .find(isMonetaryFlow);
+  if (selected) return selected.id;
+  const profit = Object.values(model.metrics).find((metric) => (
+    isMonetaryFlow(metric)
+    && (metric.id === 'profit' || metric.alias === 'profit')
+  ));
+  if (profit) return profit.id;
+  const northStar = model.activeNorthStarId ? model.metrics[model.activeNorthStarId] : undefined;
+  if (isMonetaryFlow(northStar)) return northStar!.id;
+  return Object.values(model.metrics).find(isMonetaryFlow)?.id ?? null;
 }
 
 function createId(prefix: string): string {
@@ -277,6 +362,7 @@ export default function App() {
   const [scenarioId, setScenarioId] = useState(initial.workspace.activeScenarioId);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
+  const [selectedFrameId, setSelectedFrameId] = useState<string | null>(null);
   const [impactActive, setImpactActive] = useState(false);
   const [shock, setShock] = useState<Shock>({ kind: 'relative', amount: 0.1 });
   const [leftOpen, setLeftOpen] = useState(true);
@@ -307,6 +393,7 @@ export default function App() {
   });
   const [visualGroupEditor, setVisualGroupEditor] = useState<VisualGroupEditorState | null>(null);
   const [breakdownEditorMetricId, setBreakdownEditorMetricId] = useState<string | null>(null);
+  const [timelineDialogFrameId, setTimelineDialogFrameId] = useState<string | null>(null);
 
   const { transform, setTransform, zoomIn, zoomOut, fitToView } = useCanvasControls(
     initial.workspace.viewport,
@@ -339,6 +426,22 @@ export default function App() {
     () => evaluateModel(model, 'base', inputOverridesByScenario.base ?? {}),
     [inputOverridesByScenario.base, model],
   );
+  const timelineResults = useMemo(
+    () => monthlyTimelineResults(model, evaluation.metrics),
+    [evaluation.metrics, model],
+  );
+  const baselineTimelineResults = useMemo(
+    () => monthlyTimelineResults(model, baselineEvaluation.metrics),
+    [baselineEvaluation.metrics, model],
+  );
+  const displayMetrics = useMemo(
+    () => withMonthlyTimelineValues(model, evaluation.metrics, timelineResults),
+    [evaluation.metrics, model, timelineResults],
+  );
+  const baselineDisplayMetrics = useMemo(
+    () => withMonthlyTimelineValues(model, baselineEvaluation.metrics, baselineTimelineResults),
+    [baselineEvaluation.metrics, baselineTimelineResults, model],
+  );
   const impact = useMemo(
     () => computeImpact(
       selectedIds[selectedIds.length - 1] ?? '',
@@ -363,6 +466,9 @@ export default function App() {
     manuallyHiddenMetricIds.forEach((id) => hidden.add(id));
     for (const group of Object.values(model.visualGroups)) {
       if (group.collapsed) group.metricIds.forEach((id) => hidden.add(id));
+    }
+    for (const frame of Object.values(model.executableFrames ?? {})) {
+      if (frame.collapsed) frame.metricIds.forEach((id) => hidden.add(id));
     }
     return hidden;
   }, [manuallyHiddenMetricIds, model]);
@@ -389,14 +495,14 @@ export default function App() {
     [model.domains],
   );
   const contentSize = useMemo(() => {
-    const bounds = Object.values(model.metrics)
+    const bounds = Object.values(displayMetrics)
       .filter((metric) => !hiddenMetricIds.has(metric.id))
       .map((metric) => getMetricCardBounds(metric.position, metric.behavior));
     return {
       width: Math.max(MIN_CONTENT_WIDTH, ...bounds.map((item) => item.right + 160)),
       height: Math.max(MIN_CONTENT_HEIGHT, ...bounds.map((item) => item.bottom + 160)),
     };
-  }, [hiddenMetricIds, model.metrics]);
+  }, [displayMetrics, hiddenMetricIds]);
   const modelList = useMemo(
     () => Object.values(library.entries).map(({ workspace }) => ({
       id: workspace.model.id,
@@ -518,6 +624,7 @@ export default function App() {
 
   const selectMetric = useCallback((id: string, additive = false) => {
     setSelectedGroupId(null);
+    setSelectedFrameId(null);
     setSelectedIds((current) => {
       if (!additive) return [id];
       return current.includes(id) ? current.filter((item) => item !== id) : [...current, id];
@@ -610,7 +717,10 @@ export default function App() {
   const handleSaveBreakdown = useCallback((input: MetricBreakdownInput) => {
     if (!breakdownEditorMetricId) return;
     try {
-      const candidate = upsertMetricBreakdown(model, breakdownEditorMetricId, input);
+      const withBreakdown = upsertMetricBreakdown(model, breakdownEditorMetricId, input);
+      const candidate = synchronizeExecutableFrameMetricIds(
+        addMetricIdsToSnapshotFrame(withBreakdown, Object.keys(withBreakdown.metrics)),
+      );
       topologicalOrder(candidate);
       const checked = evaluateModel(candidate, scenarioId, currentOverrides);
       const blocking = checked.errors.find((error) => error.metricId === breakdownEditorMetricId);
@@ -651,7 +761,9 @@ export default function App() {
     if (!breakdownEditorMetricId) return;
     const metric = evaluation.metrics[breakdownEditorMetricId];
     if (!metric || !window.confirm('Удалить табличный состав и оставить текущий итог обычным вводимым значением?')) return;
-    const candidate = removeMetricBreakdown(model, breakdownEditorMetricId, metric.value ?? 0);
+    const candidate = synchronizeExecutableFrameMetricIds(
+      removeMetricBreakdown(model, breakdownEditorMetricId, metric.value ?? 0),
+    );
     commitModel(() => candidate);
     setBreakdownEditorMetricId(null);
     setSelectedIds([breakdownEditorMetricId]);
@@ -733,7 +845,23 @@ export default function App() {
     startDrag(group.metricIds, event);
   }, [model.visualGroups, startDrag]);
 
+  const handleStartFrameDrag = useCallback((id: string, event: ReactPointerEvent) => {
+    const frame = model.executableFrames?.[id];
+    if (!frame) return;
+    startDrag(frame.metricIds, event);
+  }, [model.executableFrames, startDrag]);
+
   const handleDeleteMetric = useCallback((id: string) => {
+    const referencedByFrame = Object.values(model.executableFrames ?? {}).some((frame) => (
+      frame.execution.mode === 'monthly_snapshot'
+        ? frame.execution.outputMetricId === id
+        : frame.execution.sourceMetricId === id
+          || Object.values(frame.execution.stockMetricIds).includes(id)
+    ));
+    if (referencedByFrame) {
+      setNotice('Эта метрика является входом или результатом исполняемой модели. Сначала измените модель окупаемости.');
+      return;
+    }
     const dependents = calculationRelations.filter((relation) => relation.from === id);
     if (dependents.length > 0) {
       setNotice(`Нельзя удалить «${model.metrics[id]?.name}»: от неё зависят расчётные формулы.`);
@@ -766,6 +894,15 @@ export default function App() {
           ])
           .filter(([, group]) => (group as VisualGroupDef).metricIds.length > 0),
       );
+      const executableFrames = Object.fromEntries(
+        Object.entries(current.executableFrames ?? {}).map(([frameId, frame]) => [
+          frameId,
+          {
+            ...frame,
+            metricIds: frame.metricIds.filter((metricId) => !ownedMetricIds.has(metricId)),
+          },
+        ]),
+      );
       return {
         ...current,
         activeNorthStarId: current.activeNorthStarId === id ? null : current.activeNorthStarId,
@@ -775,6 +912,7 @@ export default function App() {
         domains: syncDomainMemberships(metrics, current.domains),
         scenarios,
         visualGroups,
+        executableFrames,
         influenceRelations: current.influenceRelations.filter(
           (relation) => !ownedMetricIds.has(relation.from) && !ownedMetricIds.has(relation.to),
         ),
@@ -782,7 +920,7 @@ export default function App() {
     });
     setSelectedIds((current) => current.filter((metricId) => metricId !== id));
     setMetricMenu(null);
-  }, [calculationRelations, commitModel, model.breakdowns, model.metrics]);
+  }, [calculationRelations, commitModel, model.breakdowns, model.executableFrames, model.metrics]);
 
   const openCreateEditor = useCallback((createAt?: CanvasPoint) => {
     setEditor({ mode: 'create', createAt, draft: defaultMetricDraft() });
@@ -978,11 +1116,14 @@ export default function App() {
           },
         };
       }
-      const candidate = synchronizeMetricBreakdownFormulas({
+      const synchronized = synchronizeMetricBreakdownFormulas({
         ...model,
         metrics,
         domains: syncDomainMemberships(metrics, model.domains),
       });
+      const candidate = synchronizeExecutableFrameMetricIds(
+        addMetricIdsToSnapshotFrame(synchronized, [id]),
+      );
       topologicalOrder(candidate);
       const checked = evaluateModel(candidate, scenarioId, currentOverrides);
       const blocking = checked.errors.find((error) => error.metricId === id);
@@ -1026,6 +1167,7 @@ export default function App() {
     setSelectionRect({ start: point, end: point });
     if (!event.shiftKey) setSelectedIds([]);
     setSelectedGroupId(null);
+    setSelectedFrameId(null);
     setMetricMenu(null);
     setGroupMenu(null);
     setCanvasMenu(null);
@@ -1143,10 +1285,12 @@ export default function App() {
     setTransform(workspace.viewport);
     setSelectedIds([]);
     setSelectedGroupId(null);
+    setSelectedFrameId(null);
     setImpactActive(false);
     setHoveredEdge(null);
     setEditor(null);
     setFormulaOpen(false);
+    setTimelineDialogFrameId(null);
   }, [setTransform]);
 
   const handleImportFile = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -1408,6 +1552,73 @@ export default function App() {
     setGroupMenu(null);
   }, [commitModel]);
 
+  const handleOpenMonthlyTimeline = useCallback(() => {
+    const existing = Object.values(model.executableFrames ?? {})
+      .find((frame) => frame.execution.mode === 'monthly_timeline');
+    if (existing) {
+      setTimelineDialogFrameId(existing.id);
+      setSelectedFrameId(existing.id);
+      setSelectedGroupId(null);
+      setSelectedIds([]);
+      return;
+    }
+    const sourceMetricId = timelineSourceMetricId(model, selectedIds);
+    if (!sourceMetricId) {
+      setNotice('Сначала нужна денежная Flow-метрика за месяц, например «Прибыль».');
+      return;
+    }
+    try {
+      const created = ensureMonthlyTimelineFrame(model, sourceMetricId);
+      commitModel(() => created.model);
+      setTimelineDialogFrameId(created.frameId);
+      setSelectedFrameId(created.frameId);
+      setSelectedGroupId(null);
+      setSelectedIds([]);
+      setNotice('Добавлена помесячная модель окупаемости. Укажите стартовый и будущий CAPEX.');
+      window.setTimeout(handleFitToView, 80);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : 'Не удалось создать Timeline.');
+    }
+  }, [commitModel, handleFitToView, model, selectedIds]);
+
+  const handleOpenExecutableFrame = useCallback((id: string) => {
+    const frame = model.executableFrames?.[id];
+    if (!frame) return;
+    setSelectedFrameId(id);
+    setSelectedGroupId(null);
+    setSelectedIds([]);
+    if (frame.execution.mode === 'monthly_timeline') {
+      setTimelineDialogFrameId(id);
+      return;
+    }
+    const output = displayMetrics[frame.execution.outputMetricId];
+    setNotice(
+      output
+        ? `Snapshot «${frame.name}» сейчас выдаёт ${output.name}: ${output.value ?? '—'} ${output.unit.symbol}.`
+        : `Snapshot «${frame.name}» готов к расчёту.`,
+    );
+  }, [displayMetrics, model.executableFrames]);
+
+  const handleSaveMonthlyTimeline = useCallback((config: {
+    horizonMonths: number;
+    investments: {
+      id: string;
+      name: string;
+      monthIndex: number;
+      amount: number;
+      comment: string;
+    }[];
+  }) => {
+    if (!timelineDialogFrameId) return;
+    commitModel((current) => updateMonthlyTimelineFrame(
+      current,
+      timelineDialogFrameId,
+      config,
+    ));
+    setTimelineDialogFrameId(null);
+    setNotice('План CAPEX сохранён; накопители и точка окупаемости пересчитаны.');
+  }, [commitModel, timelineDialogFrameId]);
+
   const selectionStyle = selectionRect
     ? {
         left: Math.min(selectionRect.start.x, selectionRect.end.x),
@@ -1419,6 +1630,15 @@ export default function App() {
   const scenarioOrder = Object.keys(model.scenarios);
   const groupBeingEdited = visualGroupEditor?.groupId
     ? model.visualGroups[visualGroupEditor.groupId]
+    : undefined;
+  const timelineDialogFrame = timelineDialogFrameId
+    ? model.executableFrames?.[timelineDialogFrameId]
+    : undefined;
+  const activeTimelineFrame: ExecutableFrameDef | undefined = timelineDialogFrame?.execution.mode === 'monthly_timeline'
+    ? timelineDialogFrame
+    : undefined;
+  const activeTimelineResult = activeTimelineFrame
+    ? timelineResults[activeTimelineFrame.id]
     : undefined;
 
   return (
@@ -1507,14 +1727,51 @@ export default function App() {
             });
           }}
         >
+          {Object.values(model.executableFrames ?? {}).map((frame) => (
+            <ExecutableFrame
+              key={frame.id}
+              frame={{
+                id: frame.id,
+                name: frame.name,
+                color: frame.color,
+                metricIds: frame.metricIds,
+                collapsed: frame.collapsed,
+                mode: frame.execution.mode,
+                horizonMonths: frame.execution.mode === 'monthly_timeline'
+                  ? frame.execution.horizonMonths
+                  : undefined,
+              }}
+              metrics={displayMetrics}
+              selected={selectedFrameId === frame.id}
+              onSelect={(id) => {
+                setSelectedFrameId(id);
+                setSelectedGroupId(null);
+                setSelectedIds([]);
+              }}
+              onToggleCollapsed={(id) => updatePresentation((current) => {
+                const currentFrame = current.executableFrames?.[id];
+                if (!currentFrame) return current;
+                return {
+                  ...current,
+                  executableFrames: {
+                    ...(current.executableFrames ?? {}),
+                    [id]: { ...currentFrame, collapsed: !currentFrame.collapsed },
+                  },
+                };
+              })}
+              onStartDrag={handleStartFrameDrag}
+              onOpen={handleOpenExecutableFrame}
+            />
+          ))}
           {Object.values(model.visualGroups).map((group) => (
             <VisualGroupFrame
               key={group.id}
               group={group}
-              metrics={evaluation.metrics}
+              metrics={displayMetrics}
               selected={selectedGroupId === group.id}
               onSelect={(id) => {
                 setSelectedGroupId(id);
+                setSelectedFrameId(null);
                 setSelectedIds([]);
               }}
               onToggleCollapsed={(id) => updatePresentation((current) => ({
@@ -1536,7 +1793,7 @@ export default function App() {
           ))}
           <CanvasEdges
             edges={allEdges}
-            metrics={evaluation.metrics}
+            metrics={displayMetrics}
             focus={graphFocus}
             impactDeltas={impactActive ? impact?.deltas : undefined}
             scale={transform.scale}
@@ -1544,7 +1801,7 @@ export default function App() {
             hoveredEdgeKey={hoveredEdgeKey}
             onHoveredEdgeChange={setHoveredEdge}
           />
-          {Object.values(evaluation.metrics)
+          {Object.values(displayMetrics)
             .filter((metric) => !hiddenMetricIds.has(metric.id))
             .map((metric) => (
               <MetricCard
@@ -1562,7 +1819,7 @@ export default function App() {
                   setMetricMenu({ id, x: event.clientX, y: event.clientY });
                 }}
                 formulaSource={metric.formula
-                  ? formatFormulaAst(metric.formula.ast, evaluation.metrics)
+                  ? formatFormulaAst(metric.formula.ast, displayMetrics)
                   : undefined}
                 delta={impactActive && impact?.deltas[metric.id] !== undefined && metric.id !== impact.inputId
                   ? impact.deltas[metric.id]
@@ -1603,7 +1860,7 @@ export default function App() {
         <GraphModeIndicator focus={graphFocus} selectedCount={selectedIds.length} />
 
         <InputPanel
-          metrics={evaluation.metrics}
+          metrics={displayMetrics}
           domains={domains}
           collapsedDomainIds={collapsedDomainIds}
           onToggleDomain={handleToggleDomain}
@@ -1620,8 +1877,8 @@ export default function App() {
         />
 
         <InspectorPanel
-          metrics={evaluation.metrics}
-          baselineMetrics={baselineEvaluation.metrics}
+          metrics={displayMetrics}
+          baselineMetrics={baselineDisplayMetrics}
           model={model}
           selectedId={primarySelectedId}
           scenarioId={scenarioId}
@@ -1647,6 +1904,9 @@ export default function App() {
           onFitToView={handleFitToView}
           onAutoLayout={handleAutoLayout}
           onAddMetric={() => openCreateEditor()}
+          onOpenMonthlyTimeline={handleOpenMonthlyTimeline}
+          monthlyTimelineExists={Object.values(model.executableFrames ?? {})
+            .some((frame) => frame.execution.mode === 'monthly_timeline')}
           onUndo={undo}
           onRedo={redo}
           canUndo={history.past.length > 0}
@@ -1756,6 +2016,29 @@ export default function App() {
           onSave={handleSaveVisualGroup}
           onClose={() => setVisualGroupEditor(null)}
         />
+
+        {activeTimelineFrame
+        && activeTimelineFrame.execution.mode === 'monthly_timeline'
+        && activeTimelineResult ? (
+          <Suspense fallback={null}>
+            <MonthlyTimelineDialog
+              open
+              modelName={activeTimelineFrame.name}
+              sourceMetricName={
+                displayMetrics[activeTimelineFrame.execution.sourceMetricId]?.name
+                ?? 'Денежный поток'
+              }
+              horizonMonths={activeTimelineFrame.execution.horizonMonths}
+              operatingCashFlow={
+                displayMetrics[activeTimelineFrame.execution.sourceMetricId]?.value ?? 0
+              }
+              investments={activeTimelineFrame.execution.investments}
+              result={activeTimelineResult}
+              onSave={handleSaveMonthlyTimeline}
+              onClose={() => setTimelineDialogFrameId(null)}
+            />
+          </Suspense>
+        ) : null}
       </div>
 
       {metricMenu ? (
